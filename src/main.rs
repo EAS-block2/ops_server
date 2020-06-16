@@ -7,7 +7,7 @@ fn main() {
     let mut points_o = PointsStruct{points:0, buttons: 0};
     points_o.load_file(points_f);
     spawn_revere(points_o.points, false);
-    thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(5)); //temporary until loop is established
 }
 
 // Read data from a file
