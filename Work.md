@@ -11,3 +11,4 @@
 ## Notes:
 
 - State of revere threads: can get interrupts. Sockets not implimented so offline comms are not implimented.
+- USE THIS: https://doc.rust-lang.org/std/net/
