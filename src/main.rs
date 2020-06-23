@@ -2,16 +2,21 @@ use std::fs;
 use std::thread;
 use crossbeam_channel::unbounded;
 use std::time::Duration;
-
+use std::net::{TcpListener, TcpStream};
+use std::io::{Read, Write};
 fn main() {
     let (s1, r1) = unbounded();
     let points_f = "/home/jake/Documents/EAS/Block2/points.txt";
     let mut points_o = PointsStruct{points:0, buttons: 0};
     points_o.load_file(points_f);
     spawn_revere(points_o.points, false, r1);
-    thread::sleep(Duration::from_secs(5)); //temporary until loop is established
+    thread::sleep(Duration::from_secs(2)); //temporary until loop is established
     for _ in 0..(points_o.points){s1.send(0).unwrap()};
-    println!("main thread done.");
+    spawn_button();
+    loop{
+    println!("main thread running.");
+    thread::sleep(Duration::from_secs(4));
+    }
 }
 
 // Read data from a file
@@ -59,4 +64,36 @@ fn spawn_revere(pts: u8, do_ip_fallback: bool, reciever: crossbeam_channel::Rece
         });
         handles.push(handle); //not being used rn
     }
+}
+
+// create thread for listening for sockets from buttons
+fn spawn_button(){
+    let bThread = thread::spawn( || {
+        let listener = TcpListener::bind("192.168.1.144:5432").unwrap();
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    println!("Got connection: {:?}", stream);
+                    let mut data = [0 as u8; 50];
+                    match stream.read(&mut data){
+                        Ok(size) => {
+                            println!("data: {:?}",(&data[0..size]))
+                        }
+                        Err(err) => {
+                            println!("Fault when reading data!");
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Connection failed with code {}", e);
+                }
+            }
+        }
+        /*for stream in listener.incoming() {
+            println!("Got connection with data: {:?}", stream);
+            let mut stream = stream.unwrap();
+            stream.write(b"Hello World\r\n").unwrap();
+        }*/
+        println!("Button Listen Thread Exiting!");
+    });
 }
