@@ -3,22 +3,34 @@ use std::thread;
 use crossbeam_channel::unbounded;
 use std::time::Duration;
 use std::net::{TcpListener, TcpStream};
-use std::io::{Read, Write};
+use std::io::{Read, Write, BufRead};
+use std::str;
 fn main() {
-    let (s1, r1) = unbounded();
+    let mut testInt = 0;
+    let (rs1, rr1) = unbounded();
+    let (bs, br) = unbounded();
     let points_f = "/home/jake/Documents/EAS/Block2/points.txt";
     let mut points_o = PointsStruct{points:0, buttons: 0};
     points_o.load_file(points_f);
-    spawn_revere(points_o.points, false, r1);
-    thread::sleep(Duration::from_secs(2)); //temporary until loop is established
-    for _ in 0..(points_o.points){s1.send(0).unwrap()};
-    spawn_button();
-    loop{
+    spawn_button(bs);
+    loop {
+    testInt += 1;
+    match br.try_recv(){ //right now we get stuck here, not good
+        Ok(e) => {
+            if e == 1 {spawn_revere(points_o.points, false, rr1.clone());
+            testInt = 0;}},
+        Err(e) => {match e {
+            crossbeam_channel::TryRecvError::Empty => println!("No Info from buttons, all clear."),
+            crossbeam_channel::TryRecvError::Disconnected => {
+                panic!("FATAL: lost communications with button thread");
+            }}}
+    }
+    if testInt == 25 {
+    for _ in 0..(points_o.points){rs1.send(0).unwrap()};} //kill all reveres, not needed rn
     println!("main thread running.");
-    thread::sleep(Duration::from_secs(4));
+    thread::sleep(Duration::from_secs(2));
     }
 }
-
 // Read data from a file
 struct PointsStruct {
     points: u8,
@@ -67,33 +79,30 @@ fn spawn_revere(pts: u8, do_ip_fallback: bool, reciever: crossbeam_channel::Rece
 }
 
 // create thread for listening for sockets from buttons
-fn spawn_button(){
-    let bThread = thread::spawn( || {
+fn spawn_button(sender: crossbeam_channel::Sender<i32>){
+    thread::spawn(move || {
         let listener = TcpListener::bind("192.168.1.144:5432").unwrap();
         for stream in listener.incoming() {
             match stream {
-                Ok(stream) => {
-                    println!("Got connection: {:?}", stream);
+                Ok(mut streamm) => {
                     let mut data = [0 as u8; 50];
-                    match stream.read(&mut data){
+                    match streamm.read(&mut data){
                         Ok(size) => {
-                            println!("data: {:?}",(&data[0..size]))
+                           match str::from_utf8(&data[0..size]){
+                               Ok(string_out) => {
+                                   println!("Got data: {}", string_out);
+                                   sender.send(1).unwrap(); //Tell the main thread about it. TODO: stop using ints and pass actual hostname
+                                   streamm.write(b"ok").unwrap();
+                               }
+                               Err(_) => {println!("fault");}
+                           }
                         }
-                        Err(err) => {
-                            println!("Fault when reading data!");
-                        }
+                        Err(_) => {println!("Fault when reading data!");}
                     }
                 }
-                Err(e) => {
-                    println!("Connection failed with code {}", e);
-                }
+                Err(e) => {println!("Connection failed with code {}", e);}
             }
         }
-        /*for stream in listener.incoming() {
-            println!("Got connection with data: {:?}", stream);
-            let mut stream = stream.unwrap();
-            stream.write(b"Hello World\r\n").unwrap();
-        }*/
         println!("Button Listen Thread Exiting!");
     });
 }
