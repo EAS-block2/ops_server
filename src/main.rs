@@ -7,29 +7,37 @@ use std::io::{Read, Write, BufRead};
 use std::str;
 fn main() {
     let mut testInt = 0;
-    let (rs1, rr1) = unbounded();
-    let (bs, br) = unbounded();
+    let (general_s, general_r) = unbounded();
+    let (silent_s, silent_r) = unbounded();
+    let general_alarm = Alarm {kind: AlarmType::General, port: "5432".to_string(), sender: general_s, reciever: general_r};
+    let silent_alarm = Alarm {kind: AlarmType::Silent, port: "5433".to_string(), sender: silent_s, reciever: silent_r};
+    let (revere_send, revere_read) = unbounded();
+    //Weather s and r in the future, not needed currently
     let points_f = "/home/jake/Documents/EAS/Block2/points.txt";
     let mut points_o = PointsStruct{points:0, buttons: 0};
     points_o.load_file(points_f);
-    spawn_button(bs);
+    spawn_button(&general_alarm);
     loop {
     testInt += 1;
-    match br.try_recv(){ //right now we get stuck here, not good
-        Ok(e) => {
-            if e == 1 {spawn_revere(points_o.points, false, rr1.clone());
-            testInt = 0;}},
-        Err(e) => {match e {
-            crossbeam_channel::TryRecvError::Empty => println!("No Info from buttons, all clear."),
-            crossbeam_channel::TryRecvError::Disconnected => {
-                panic!("FATAL: lost communications with button thread");
-            }}}
-    }
+    read_alarms(&general_alarm, points_o.points, revere_read.clone());
+    read_alarms(&silent_alarm, points_o.points, revere_read.clone());
     if testInt == 25 {
-    for _ in 0..(points_o.points){rs1.send(0).unwrap()};} //kill all reveres, not needed rn
+    for _ in 0..(points_o.points){revere_send.send(0).unwrap()};} //kill all reveres
     println!("main thread running.");
     thread::sleep(Duration::from_secs(2));
     }
+}
+//Kinds of alarm
+#[derive(Clone, Copy)]
+enum AlarmType{
+    General,
+    Silent,
+}
+struct Alarm{
+    kind: AlarmType,
+    port: String,
+    sender: crossbeam_channel::Sender<String>,
+    reciever: crossbeam_channel::Receiver<String>,
 }
 // Read data from a file
 struct PointsStruct {
@@ -50,7 +58,7 @@ impl PointsStruct {
     }
 }
 //create threads to notify strobes and signs of an emergency
-fn spawn_revere(pts: u8, do_ip_fallback: bool, reciever: crossbeam_channel::Receiver<i32>){
+fn spawn_revere(pts: u8, do_ip_fallback: bool, alarm: AlarmType, activator: String, reciever: crossbeam_channel::Receiver<i32>){
     let mut handles = vec![];
     for i in 0..pts {
         let listener = reciever.clone();
@@ -78,10 +86,13 @@ fn spawn_revere(pts: u8, do_ip_fallback: bool, reciever: crossbeam_channel::Rece
     }
 }
 
-// create thread for listening for sockets from buttons
-fn spawn_button(sender: crossbeam_channel::Sender<i32>){
+// create 2 threads for listening for sockets from buttons
+fn spawn_button(alarm_info:&Alarm){
+    let sender = alarm_info.sender.clone();
+    let mut listen_addr = "192.168.1.144:".to_string();
+    listen_addr.push_str(&alarm_info.port);
     thread::spawn(move || {
-        let listener = TcpListener::bind("192.168.1.144:5432").unwrap();
+        let listener = TcpListener::bind(listen_addr).unwrap();
         for stream in listener.incoming() {
             match stream {
                 Ok(mut streamm) => {
@@ -91,7 +102,7 @@ fn spawn_button(sender: crossbeam_channel::Sender<i32>){
                            match str::from_utf8(&data[0..size]){
                                Ok(string_out) => {
                                    println!("Got data: {}", string_out);
-                                   sender.send(1).unwrap(); //Tell the main thread about it. TODO: stop using ints and pass actual hostname
+                                   sender.send(string_out.to_string()).unwrap();
                                    streamm.write(b"ok").unwrap();
                                }
                                Err(_) => {println!("fault");}
@@ -105,4 +116,18 @@ fn spawn_button(sender: crossbeam_channel::Sender<i32>){
         }
         println!("Button Listen Thread Exiting!");
     });
+}
+
+fn read_alarms(alarm:&Alarm, points_num: u8, reciever: crossbeam_channel::Receiver<i32>){
+    match alarm.reciever.try_recv(){ 
+        Ok(who) => {
+            spawn_revere(points_num, false, alarm.kind, who, reciever);}
+        Err(e) => {
+            drop(reciever);
+            match e {
+            crossbeam_channel::TryRecvError::Empty => (), //if we get no responce it's technically an err
+            crossbeam_channel::TryRecvError::Disconnected => {
+                panic!("FATAL: lost communications with button thread");
+            }}}
+    }
 }
