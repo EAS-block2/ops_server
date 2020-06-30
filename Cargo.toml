@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 crossbeam-channel = "0.4"
+dns-lookup = "1.0.3"

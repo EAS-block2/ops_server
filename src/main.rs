@@ -2,8 +2,8 @@ use std::fs;
 use std::thread;
 use crossbeam_channel::unbounded;
 use std::time::Duration;
-use std::net::{TcpListener, TcpStream};
-use std::io::{Read, Write, BufRead};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs, SocketAddr};
+use std::io::{Read, Write};
 use std::str;
 fn main() {
     let mut testInt = 0;
@@ -17,12 +17,13 @@ fn main() {
     let mut points_o = PointsStruct{points:0, buttons: 0};
     points_o.load_file(points_f);
     spawn_button(&general_alarm);
+    spawn_button(&silent_alarm);
     loop {
     testInt += 1;
     read_alarms(&general_alarm, points_o.points, revere_read.clone());
     read_alarms(&silent_alarm, points_o.points, revere_read.clone());
-    if testInt == 25 {
-    for _ in 0..(points_o.points){revere_send.send(0).unwrap()};} //kill all reveres
+
+    //for _ in 0..(points_o.points){revere_send.send(0).unwrap()};} //kill all reveres
     println!("main thread running.");
     thread::sleep(Duration::from_secs(2));
     }
@@ -32,6 +33,18 @@ fn main() {
 enum AlarmType{
     General,
     Silent,
+}
+impl AlarmType{
+    fn into_sendable(&mut self, who: &String) -> Vec<u8>{
+        let mut tmp: String;
+        match &self{
+            AlarmType::General => {tmp = "General ".to_string()},
+            AlarmType::Silent => {tmp = "Silent ".to_string()}
+        }
+        tmp.push_str(who);
+        let retn = tmp.into_bytes();
+        retn
+    }
 }
 struct Alarm{
     kind: AlarmType,
@@ -58,27 +71,58 @@ impl PointsStruct {
     }
 }
 //create threads to notify strobes and signs of an emergency
-fn spawn_revere(pts: u8, do_ip_fallback: bool, alarm: AlarmType, activator: String, reciever: crossbeam_channel::Receiver<i32>){
+fn spawn_revere(pts: u8, do_ip_fallback: bool, alm: AlarmType, who: String, reciever: crossbeam_channel::Receiver<i32>){
     let mut handles = vec![];
     for i in 0..pts {
         let listener = reciever.clone();
+        let activator = who.clone();
+        let mut alarm = alm.clone();
         let handle = thread::spawn(move || {
             let mut target = "Point".to_string();
+            let tgt: std::net::SocketAddr;
             if do_ip_fallback {
                 println!("Attempting IP lookup fallback");
+                tgt = SocketAddr::from(([192, 168, 1, 144], 5432)); //TEMPORARY
             }
             else {
                 target.push_str(&i.to_string());
-                println!("Opening socket with {}", target);
+                target.push_str(":5400");
+                let mut addrs_iter = target.to_socket_addrs().unwrap();
+                match addrs_iter.next(){
+                    Some(addr) => {tgt = addr;},
+                    None => {tgt = SocketAddr::from(([127, 0, 0, 1], 5400));} //should probably set do_ip_fallback to true //TEMPORARY
+                }
             }
+            println!("Opening socket with {:?}", tgt);
+            let mut stream = TcpStream::connect(tgt).expect("fault while connecting!");
+            match stream.set_read_timeout(Some(Duration::from_secs(10))){Ok(_) =>{println!("Timeout set for 10 seconds")}, Err(_) =>()}
             let mut msg: String;
             loop{
-                match listener.recv(){
+                println!("revere loop run");
+                //check for thread close
+                match listener.try_recv(){
                     Ok(e) => msg = e.to_string(),
                     Err(_) => msg = "nothing".to_string(),
                 }
-                println!("MSG is: {}", msg);
+                //println!("MSG is: {}", msg);
                 if msg == 0.to_string() {break;}
+                //communicate with point
+                let sendable = alarm.into_sendable(&activator);
+                println!("Sending data: {:?}", &sendable);
+                match stream.write(&sendable.as_slice()) {Ok(_)=>{println!("send alm data")}, Err(e) => {println!("Write fault! err: {}",e)}}
+                let mut data = [0 as u8; 50];
+                match stream.read(&mut data){
+                    Ok(size) => {
+                       match str::from_utf8(&data[0..size]){
+                           Ok(string_out) => {
+                               println!("Got data: {}", string_out);}
+                           Err(e) => {println!("{}",e);}
+                       }
+                    }
+                    Err(_) => {println!("Fault when reading data!");}
+                }
+                thread::sleep(Duration::from_secs(2));
+                println!("\n");
             }
             println!("Exiting Thread");
         });
@@ -88,6 +132,7 @@ fn spawn_revere(pts: u8, do_ip_fallback: bool, alarm: AlarmType, activator: Stri
 
 // create 2 threads for listening for sockets from buttons
 fn spawn_button(alarm_info:&Alarm){
+    println!("starting thread listening on port: {}", alarm_info.port);
     let sender = alarm_info.sender.clone();
     let mut listen_addr = "192.168.1.144:".to_string();
     listen_addr.push_str(&alarm_info.port);
@@ -121,7 +166,7 @@ fn spawn_button(alarm_info:&Alarm){
 fn read_alarms(alarm:&Alarm, points_num: u8, reciever: crossbeam_channel::Receiver<i32>){
     match alarm.reciever.try_recv(){ 
         Ok(who) => {
-            spawn_revere(points_num, false, alarm.kind, who, reciever);}
+            spawn_revere(points_num, false, alarm.kind, who, reciever);} //TODO: add actual fallback support
         Err(e) => {
             drop(reciever);
             match e {
