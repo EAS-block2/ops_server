@@ -1,10 +1,8 @@
-use std::fs;
-use std::thread;
 use crossbeam_channel::unbounded;
 use std::time::Duration;
-use std::net::{TcpListener, TcpStream, ToSocketAddrs, SocketAddr};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs, SocketAddr, Shutdown};
 use std::io::{Read, Write};
-use std::str;
+use std::{str, thread, fs};
 fn main() {
     let mut testInt = 0;
     let (general_s, general_r) = unbounded();
@@ -13,7 +11,7 @@ fn main() {
     let silent_alarm = Alarm {kind: AlarmType::Silent, port: "5433".to_string(), sender: silent_s, reciever: silent_r};
     let (revere_send, revere_read) = unbounded();
     //Weather s and r in the future, not needed currently
-    let points_f = "/home/jake/Documents/EAS/Block2/points.txt";
+    let points_f = "/home/jake/Documents/Programming/Block2/points.txt";
     let mut points_o = PointsStruct{points:0, buttons: 0};
     points_o.load_file(points_f);
     spawn_button(&general_alarm);
@@ -22,8 +20,8 @@ fn main() {
     testInt += 1;
     read_alarms(&general_alarm, points_o.points, revere_read.clone());
     read_alarms(&silent_alarm, points_o.points, revere_read.clone());
-
-    //for _ in 0..(points_o.points){revere_send.send(0).unwrap()};} //kill all reveres
+    if testInt == 20{testInt=0;
+    for _ in 0..(points_o.points){revere_send.send(0).unwrap()};} //kill all reveres
     println!("main thread running.");
     thread::sleep(Duration::from_secs(2));
     }
@@ -74,6 +72,7 @@ impl PointsStruct {
 fn spawn_revere(pts: u8, do_ip_fallback: bool, alm: AlarmType, who: String, reciever: crossbeam_channel::Receiver<i32>){
     let mut handles = vec![];
     for i in 0..pts {
+        println!("Starting Revere #{}", i);
         let listener = reciever.clone();
         let activator = who.clone();
         let mut alarm = alm.clone();
@@ -89,16 +88,15 @@ fn spawn_revere(pts: u8, do_ip_fallback: bool, alm: AlarmType, who: String, reci
                 target.push_str(":5400");
                 let mut addrs_iter = target.to_socket_addrs().unwrap();
                 match addrs_iter.next(){
-                    Some(addr) => {tgt = addr;},
+                    Some(addr) => {tgt = addr;
+                    println!("target is {:?}", addr);},
                     None => {tgt = SocketAddr::from(([127, 0, 0, 1], 5400));} //should probably set do_ip_fallback to true //TEMPORARY
                 }
             }
-            println!("Opening socket with {:?}", tgt);
-            let mut stream = TcpStream::connect(tgt).expect("fault while connecting!");
-            match stream.set_read_timeout(Some(Duration::from_secs(10))){Ok(_) =>{println!("Timeout set for 10 seconds")}, Err(_) =>()}
+            //match stream.set_read_timeout(Some(Duration::from_secs(10))){Ok(_) =>{println!("Timeout set for 10 seconds")}, Err(_) =>()}
             let mut msg: String;
             loop{
-                println!("revere loop run");
+                let mut stream = TcpStream::connect(tgt).expect("fault while connecting!");
                 //check for thread close
                 match listener.try_recv(){
                     Ok(e) => msg = e.to_string(),
@@ -108,20 +106,21 @@ fn spawn_revere(pts: u8, do_ip_fallback: bool, alm: AlarmType, who: String, reci
                 if msg == 0.to_string() {break;}
                 //communicate with point
                 let sendable = alarm.into_sendable(&activator);
-                println!("Sending data: {:?}", &sendable);
-                match stream.write(&sendable.as_slice()) {Ok(_)=>{println!("send alm data")}, Err(e) => {println!("Write fault! err: {}",e)}}
+                match stream.write(sendable.as_slice()) {Ok(inf)=>{println!("send alm data info: {}", inf)}, Err(e) => {println!("Write fault! err: {}",e)}}
                 let mut data = [0 as u8; 50];
                 match stream.read(&mut data){
                     Ok(size) => {
                        match str::from_utf8(&data[0..size]){
                            Ok(string_out) => {
                                println!("Got data: {}", string_out);}
-                           Err(e) => {println!("{}",e);}
+                           Err(e) => {println!("Read Error: {}",e);}
                        }
                     }
-                    Err(_) => {println!("Fault when reading data!");}
+                    Err(e) => {println!("Fault when reading data: {}", e);}
                 }
-                thread::sleep(Duration::from_secs(2));
+                stream.shutdown(Shutdown::Both).unwrap();
+                drop(stream);
+                thread::sleep(Duration::from_secs(10));
                 println!("\n");
             }
             println!("Exiting Thread");
@@ -134,7 +133,7 @@ fn spawn_revere(pts: u8, do_ip_fallback: bool, alm: AlarmType, who: String, reci
 fn spawn_button(alarm_info:&Alarm){
     println!("starting thread listening on port: {}", alarm_info.port);
     let sender = alarm_info.sender.clone();
-    let mut listen_addr = "192.168.1.144:".to_string();
+    let mut listen_addr = "192.168.1.162:".to_string();
     listen_addr.push_str(&alarm_info.port);
     thread::spawn(move || {
         let listener = TcpListener::bind(listen_addr).unwrap();
