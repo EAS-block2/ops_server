@@ -130,10 +130,11 @@ fn spawn_revere(&self, pts: u8){
                 }
             }
             let mut msg: Vec<String> = vec!();
+            let mut clear: bool = false;
             loop{
                 //check for messages
                 match listener.try_recv(){
-                    Ok(e) => {if e.contains(&0.to_string()) {break;}
+                    Ok(e) => {if e.contains(&"clear".to_string()) {clear = true;}
                         else {msg = e}}
                     Err(_) => (),
                 }
@@ -142,7 +143,10 @@ fn spawn_revere(&self, pts: u8){
                 //communicate with point
                 let mut stream = TcpStream::connect(tgt).expect("fault while connecting!");
                 stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-                let sendable = alarm.into_sendable(&activator);
+                let to_intosendable: String;
+                if clear{to_intosendable = String::from("clear");}
+                else {to_intosendable = activator;}
+                let sendable = alarm.into_sendable(&to_intosendable);
                 match stream.write(sendable.as_slice()) {Ok(inf)=>{println!("send alm data info: {}", inf)}, Err(e) => {println!("Write fault! err: {}",e)}}
                 let mut data = [0 as u8; 50];
                 match stream.read(&mut data){
