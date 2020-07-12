@@ -1,21 +1,22 @@
 use crossbeam_channel::unbounded;
-use std::time::Duration;
+use serde_yaml;
+use serde::Deserialize;
 use std::net::{TcpListener, TcpStream, ToSocketAddrs, SocketAddr, Shutdown};
 use std::io::{Read, Write};
-use std::{str, thread, fs};
+use std::{str, thread, fs, collections::HashMap, time::Duration};
 fn main() {
     let mut testInt = 0;
+    let conf_f = std::fs::File::open("/home/jake/Documents/EAS/Block2/config.yaml").expect("e"); //tmp filepath
+    let config: Config = serde_yaml::from_reader(conf_f).expect("e");
     let (general_s, general_r) = unbounded();
     let (silent_s, silent_r) = unbounded();
-    let general_alarm = Alarm {kind: AlarmType::General, port: "5432".to_string(), sender: general_s, reciever: general_r};
-    let silent_alarm = Alarm {kind: AlarmType::Silent, port: "5433".to_string(), sender: silent_s, reciever: silent_r};
+    let general_alarm = Alarm {kind: AlarmType::General, port: 5432.to_string(), sender: general_s, reciever: general_r};
+    let silent_alarm = Alarm {kind: AlarmType::Silent, port: 5433.to_string(), sender: silent_s, reciever: silent_r};
     let (revere_send, revere_read) = unbounded();
     //Weather s and r in the future, not needed currently
-    let points_f = "/home/jake/Documents/Programming/Block2/points.txt";
-    let mut points_o = PointsStruct{points:0, buttons: 0};
-    points_o.load_file(points_f);
     spawn_button(&general_alarm);
     spawn_button(&silent_alarm);
+    let teassssss = HashMap::new();
     loop {
     testInt += 1;
     read_alarms(&general_alarm, points_o.points, revere_read.clone());
@@ -51,23 +52,14 @@ struct Alarm{
     reciever: crossbeam_channel::Receiver<String>,
 }
 // Read data from a file
-struct PointsStruct {
+#[derive(Debug, Deserialize)]
+struct Config{
     points: u8,
-    buttons: u8,}
-impl PointsStruct {
-    fn load_file(&mut self, file: &str) {
-        let f_string = fs::read_to_string(file).expect("Something went wrong reading the file");
-        let spl = f_string.split_whitespace();
-        for a in spl {
-            let b: u8;
-            b = a.parse::<u8>().unwrap();
-            if self.points == 0 {self.points = b;}
-            else{self.buttons = b;}
-        }
-        println!("points: {:?}", self.points);
-        println!("buttons: {:?}", self.buttons);
-    }
+    general_port: u32,
+    silent_port: u32,
+    loc_lookup: HashMap<String, String>,
 }
+
 //create threads to notify strobes and signs of an emergency
 fn spawn_revere(pts: u8, do_ip_fallback: bool, alm: AlarmType, who: String, reciever: crossbeam_channel::Receiver<i32>){
     let mut handles = vec![];
