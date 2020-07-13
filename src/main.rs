@@ -6,8 +6,9 @@ use std::io::{Read, Write};
 use std::{str, thread, fs, collections::HashMap, time::Duration};
 fn main() {
     let mut testInt = 0;
-    let conf_f = std::fs::File::open("/home/jake/Documents/EAS/Block2/config.yaml").expect("e"); //tmp filepath
-    let config: Config = serde_yaml::from_reader(conf_f).expect("e");
+    let conf_f = std::fs::File::open("/home/jake/Documents/Programming/Block2/ops_server/config.yaml").expect("e"); //tmp filepath
+    let config: Config = serde_yaml::from_reader(conf_f).expect("Bad YAML config file!");
+    config.print();
     let (general_s, general_r) = unbounded();
     let (silent_s, silent_r) = unbounded();
     let general_alarm = Alarm {kind: AlarmType::General, port: 5432.to_string(), sender: general_s, reciever: general_r};
@@ -16,13 +17,12 @@ fn main() {
     //Weather s and r in the future, not needed currently
     spawn_button(&general_alarm);
     spawn_button(&silent_alarm);
-    let teassssss = HashMap::new();
     loop {
     testInt += 1;
-    read_alarms(&general_alarm, points_o.points, revere_read.clone());
-    read_alarms(&silent_alarm, points_o.points, revere_read.clone());
+    read_alarms(&general_alarm, config.points, revere_read.clone());
+    read_alarms(&silent_alarm, config.points, revere_read.clone());
     if testInt == 20{testInt=0;
-    for _ in 0..(points_o.points){revere_send.send(0).unwrap()};} //kill all reveres
+    for _ in 0..(config.points){revere_send.send(0).unwrap()};} //kill all reveres
     println!("main thread running.");
     thread::sleep(Duration::from_secs(2));
     }
@@ -58,6 +58,12 @@ struct Config{
     general_port: u32,
     silent_port: u32,
     loc_lookup: HashMap<String, String>,
+}
+impl Config{
+    fn print(&self){
+        println!("Config file data: points={}, gp={}, sp={}", self.points, self.general_port, self.silent_port);
+        println!("Lookup table content: {:?}", self.loc_lookup);
+    }
 }
 
 //create threads to notify strobes and signs of an emergency
