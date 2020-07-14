@@ -1,4 +1,4 @@
-points: 6
+points: 1
 general_port: 5432
 silent_port: 5433
 loc_lookup:
