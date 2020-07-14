@@ -110,7 +110,6 @@ impl Alarm{
                             Ok(size) => {
                                match str::from_utf8(&data[0..size]){
                                 Ok(string_out) => {
-                                println!("Got data: {}", string_out);
                                 sender.send(string_out.to_string()).unwrap();
                                 streamm.write(b"ok").unwrap();
                                 }
@@ -142,8 +141,7 @@ fn spawn_revere(&self, conf: &Config){
                     Err(_) => {errsend.send(i).unwrap(); panic!("Cannot Resolve Point {}", i);}
                 }
                 match addrs_iter.next(){
-                    Some(addr) => {tgt = addr;
-                    println!("target is {:?}", addr);},
+                    Some(addr) => {tgt = addr;},
                     None => {errsend.send(i).unwrap(); panic!("Bad Address");} //should probably set do_ip_fallback to true //TEMPORARY
                 }
             let mut msg: Vec<String> = vec!();
@@ -155,7 +153,6 @@ fn spawn_revere(&self, conf: &Config){
                         else {msg = e}}
                     Err(_) => (),
                 }
-                //println!("revere MSG is: {:?}", &msg); //for testing only
                 for activator in msg.clone().into_iter(){
                 //communicate with point
                 match TcpStream::connect(tgt){
@@ -166,24 +163,25 @@ fn spawn_revere(&self, conf: &Config){
                 else {match llook.get(&activator){
                         Some(place) => {to_intosendable = place.to_string()}
                         None => {to_intosendable = String::from("Nowhere")}
-                    }println!("sending alarm loc: {}", to_intosendable);}
+                    }}
                 let sendable = alarm.into_sendable(&to_intosendable);
-                match stream.write(sendable.as_slice()) {Ok(inf)=>{println!("send alm data info: {}", inf)}, Err(e) => {println!("Write fault! err: {}",e)}}
+                match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {println!("Write fault! err: {}",e)}}
                 let mut data = [0 as u8; 50];
                 match stream.read(&mut data){
                     Ok(size) => {
                        match str::from_utf8(&data[0..size]){
                            Ok(string_out) => {
-                               println!("Got data: {}", string_out);}
-                           Err(e) => {println!("Read Error: {}",e);}
-                       }
-                    }
+                               match string_out{
+                                   "ok" => (),
+                                   &_ => {errsend.send(i).unwrap(); panic!("Point #{}: internal fatal error", i);}
+                               }}
+                           Err(e) => {println!("Client Read Error: {}",e);}
+                       }}
                     Err(e) => {println!("Fault when reading data: {}", e);}
                 }
                 stream.shutdown(Shutdown::Both).unwrap();
                 drop(stream);
-                thread::sleep(Duration::from_secs(5));
-                println!("\n");}
+                thread::sleep(Duration::from_secs(5));}
                 Err(_) => errsend.send(i).unwrap(),
             }}}
             println!("Exiting Thread");
