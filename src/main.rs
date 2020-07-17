@@ -1,7 +1,7 @@
 use crossbeam_channel::unbounded;
 use serde_yaml;
 use serde::Deserialize;
-use std::net::{TcpListener, TcpStream, ToSocketAddrs, SocketAddr, Shutdown};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs, Shutdown};
 use std::io::{Read, Write};
 use std::{str, thread, collections::HashMap, time::Duration};
 fn main() {
@@ -15,20 +15,21 @@ fn main() {
     let (s4, r4) = unbounded();
     let (fault_s, fault_r) = unbounded();
     let mut general_alarm = Alarm {kind: AlarmType::General, port: config.general_port.to_string(), button_sender: s1, button_reciever: r1,
-        revere_sender: s3, revere_reciever: r3, fault_send: fault_s.clone(), activators: vec!(), active:false,did_spawn:false};
+        revere_sender: s3, revere_reciever: r3, fault_send: fault_s.clone(), activators: vec!(), active:false,did_spawn:false,did_clear:true};
     let mut silent_alarm = Alarm {kind: AlarmType::Silent, port: config.silent_port.to_string(), button_sender: s2, button_reciever: r2,
-        revere_sender: s4, revere_reciever: r4, fault_send: fault_s.clone(), activators: vec!(), active:false,did_spawn:false};
-    let alarms = vec!(&general_alarm, &silent_alarm);
-    for i in alarms.clone(){i.spawn_button();}
-    let mut failed: Vec<u8> = vec!();
+        revere_sender: s4, revere_reciever: r4, fault_send: fault_s.clone(), activators: vec!(), active:false,did_spawn:false,did_clear:true};
+    general_alarm.spawn_button();
+    silent_alarm.spawn_button();
+    let mut failed: Vec<u8> = vec!(); //list of failed points
     loop {
         test_int += 1;
         general_alarm.process(&config);
         silent_alarm.process(&config);
         deal_with_faults(fault_r.clone(), &mut failed);
-        if test_int == 20{test_int=0;
-        for _ in 0..(config.points){general_alarm.revere_sender.send(vec!(0.to_string())).unwrap();
-        silent_alarm.revere_sender.send(vec!(0.to_string())).unwrap()};} //kill all reveres
+        println!("{}",test_int);
+        if test_int == 10{test_int=0;
+        general_alarm.activators.clear();
+        silent_alarm.activators.clear();}
         thread::sleep(Duration::from_secs(2));
     }
 }
@@ -76,10 +77,11 @@ struct Alarm{
     activators: Vec<String>,
     active: bool,
     did_spawn: bool,
+    did_clear: bool,
 }
 impl Alarm{
-    fn process(&mut self, conf: &Config){
-        match self.button_reciever.try_recv(){ 
+    fn process(&mut self, conf: &Config){ //does the actual work in terms of coordinating alarm conditions
+        match self.button_reciever.try_recv(){ //get data from respective buttont thread
             Ok(who) => {
                 if !self.activators.contains(&who){self.activators.push(who.clone());}}//check if alarm activator has already been recorded
             Err(e) => {
@@ -89,11 +91,19 @@ impl Alarm{
                     panic!("FATAL: lost communications with button thread");
                 }}}}
         self.active = !self.activators.is_empty();
-        if !self.active{self.did_spawn=false;}
-        if self.active {if !self.did_spawn{self.spawn_revere(conf);
-            self.did_spawn = true;}
-            match self.revere_sender.send(self.activators.clone()){Ok(_)=>(), Err(e)=>{println!("Revere not working due to {}", e)}}}
-        else{self.did_spawn =false;}
+        if !self.active{self.did_spawn=false;
+            if !self.did_clear{
+                self.consume_revere_msgs();
+                for _ in 0..(conf.points){self.revere_sender.send(vec!("clear".to_string())).unwrap();}
+                println!("stopped reveres!");
+                thread::sleep(Duration::from_secs(6));
+                self.consume_revere_msgs();
+                self.did_clear = true;}}
+        else if !self.did_spawn{self.spawn_revere(conf);
+            self.did_spawn = true;
+            self.did_clear = false;}
+            for _ in 0..(conf.points){match self.revere_sender.send(self.activators.clone()){
+                Ok(_)=>(), Err(e)=>{println!("Revere not working due to {}", e)}}} //sends more messages than necessary, but that's preferable than too few
     }
     fn spawn_button(&self){
         println!("starting thread listening on port: {}", self.port);
@@ -123,7 +133,7 @@ impl Alarm{
         });
     }
     //create threads to notify strobes and signs of an emergency
-fn spawn_revere(&self, conf: &Config){
+fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that a possible blocking operation only effects max. 1 point
     for i in 0..conf.points {
         println!("Starting Revere #{}", i);
         let listener = self.revere_reciever.clone();
@@ -149,7 +159,9 @@ fn spawn_revere(&self, conf: &Config){
             loop{
                 //check for messages
                 match listener.try_recv(){
-                    Ok(e) => {if e.contains(&"clear".to_string()) {clear = true;}
+                    Ok(e) => {
+                    if e.contains(&"clear".to_string()) {clear = true;
+                    msg= vec!("clear".to_string());}
                         else {msg = e}}
                     Err(_) => (),
                 }
@@ -181,13 +193,22 @@ fn spawn_revere(&self, conf: &Config){
                 }
                 stream.shutdown(Shutdown::Both).unwrap();
                 drop(stream);
-                thread::sleep(Duration::from_secs(5));}
-                Err(_) => errsend.send(i).unwrap(),
-            }}}
+                thread::sleep(Duration::from_secs(3));}
+                Err(_) => {errsend.send(i).unwrap(); panic!("Point #{}: internal fatal error", i);}
+            }
+     }if clear {break;}}
             println!("Exiting Thread");
         });
     }
 } 
+fn consume_revere_msgs(&self){
+    let listener = self.revere_reciever.clone();
+    loop{
+    match listener.try_recv(){
+        Ok(_) => (),
+        Err(_) => break,
+    }}
+}
 }
 fn deal_with_faults(reader: crossbeam_channel::Receiver<u8>,failed: &mut Vec<u8>){
     match reader.try_recv(){
