@@ -81,25 +81,25 @@ struct Alarm{
 }
 impl Alarm{
     fn process(&mut self, conf: &Config){ //does the actual work in terms of coordinating alarm conditions
-        match self.button_reciever.try_recv(){ //get data from respective buttont thread
+        match self.button_reciever.try_recv(){ //get data from respective button thread
             Ok(who) => {
                 if !self.activators.contains(&who){self.activators.push(who.clone());}}//check if alarm activator has already been recorded
             Err(e) => {
                 match e {
-                crossbeam_channel::TryRecvError::Empty => (), //if we get no responce it's technically an err
+                crossbeam_channel::TryRecvError::Empty => (), //if we get no responce it's technically an err but not a worrysome one
                 crossbeam_channel::TryRecvError::Disconnected => {
-                    panic!("FATAL: lost communications with button thread");
+                    self.spawn_button(); //assume the buton thread crashed, try to respawn it
                 }}}}
-        self.active = !self.activators.is_empty();
+        self.active = !self.activators.is_empty(); //if no activators have activated the alarm, it is off and vice versa
         if !self.active{self.did_spawn=false;
-            if !self.did_clear{
+            if !self.did_clear{ //tells revere threads to tell points that all is well, then to kill themselves
                 self.consume_revere_msgs();
                 for _ in 0..(conf.points){self.revere_sender.send(vec!("clear".to_string())).unwrap();}
                 println!("stopped reveres!");
                 thread::sleep(Duration::from_secs(6));
                 self.consume_revere_msgs();
                 self.did_clear = true;}}
-        else if !self.did_spawn{self.spawn_revere(conf);
+        else if !self.did_spawn{self.spawn_revere(conf); 
             self.did_spawn = true;
             self.did_clear = false;}
             for _ in 0..(conf.points){match self.revere_sender.send(self.activators.clone()){
@@ -210,6 +210,7 @@ fn consume_revere_msgs(&self){
     }}
 }
 }
+//read the fault channel and add any unresponsive points to the faults vec to be sent to admin
 fn deal_with_faults(reader: crossbeam_channel::Receiver<u8>,failed: &mut Vec<u8>){
     match reader.try_recv(){
         Ok(pt)=> {
