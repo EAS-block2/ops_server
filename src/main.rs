@@ -5,14 +5,14 @@ use std::net::{TcpListener, TcpStream, ToSocketAddrs, Shutdown};
 use std::io::{Read, Write};
 use std::{str, thread, collections::HashMap, time::Duration};
 fn main() {
-    let mut test_int = 0;
-    let conf_f = std::fs::File::open("/home/jake/Documents/Programming/Block2/ops_server/config.yaml").expect("e"); //tmp filepath
+    let conf_f = std::fs::File::open("/home/jake/Documents/EAS/Block2/ops_server/config.yaml").expect("e"); //tmp filepath
     let config: Config = serde_yaml::from_reader(conf_f).expect("Bad YAML config file!");
     config.print();
     let (s1, r1) = unbounded();
     let (s2, r2) = unbounded();
     let (s3, r3) = unbounded();
     let (s4, r4) = unbounded();
+    let (sCon, rCon) = unbounded();
     let (fault_s, fault_r) = unbounded();
     let mut general_alarm = Alarm {kind: AlarmType::General, port: config.general_port.to_string(), button_sender: s1, button_reciever: r1,
         revere_sender: s3, revere_reciever: r3, fault_send: fault_s.clone(), activators: vec!(), active:false,did_spawn:false,did_clear:true};
@@ -20,16 +20,22 @@ fn main() {
         revere_sender: s4, revere_reciever: r4, fault_send: fault_s.clone(), activators: vec!(), active:false,did_spawn:false,did_clear:true};
     general_alarm.spawn_button();
     silent_alarm.spawn_button();
+    spawn_conf(8082, sCon);
     let mut failed: Vec<u8> = vec!(); //list of failed points
     loop {
-        test_int += 1;
         general_alarm.process(&config);
         silent_alarm.process(&config);
         deal_with_faults(fault_r.clone(), &mut failed);
-        println!("{}",test_int);
-        if test_int == 10{test_int=0;
-        general_alarm.activators.clear();
-        silent_alarm.activators.clear();}
+        match rCon.try_recv(){
+            Ok(command) => {match command{
+                1 => {general_alarm.activators.clear();
+                    println!("Resetting general alarm")},
+                2 => {silent_alarm.activators.clear();
+                    println!("Resetting silent alarm")},
+                _ => {println!("Warning: anomalous data in confServer channel");}
+            }}
+            Err(_) => ()
+        }
         thread::sleep(Duration::from_secs(2));
     }
 }
@@ -108,7 +114,7 @@ impl Alarm{
     fn spawn_button(&self){
         println!("starting thread listening on port: {}", self.port);
         let sender = self.button_sender.clone();
-        let mut listen_addr = "192.168.1.162:".to_string();
+        let mut listen_addr = "192.168.1.125:".to_string();
         listen_addr.push_str(&self.port);
         thread::spawn(move || {
             let listener = TcpListener::bind(listen_addr).unwrap();
@@ -144,6 +150,7 @@ fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that
             let mut target = "Point".to_string();
             let tgt: std::net::SocketAddr;
                 target.push_str(&i.to_string());
+                if i == 0{target = "surface".to_string()} //real points will start at 1
                 target.push_str(":5400");
                 let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
                 match target.to_socket_addrs(){
@@ -201,6 +208,7 @@ fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that
         });
     }
 } 
+
 fn consume_revere_msgs(&self){
     let listener = self.revere_reciever.clone();
     loop{
@@ -217,4 +225,39 @@ fn deal_with_faults(reader: crossbeam_channel::Receiver<u8>,failed: &mut Vec<u8>
             if !failed.contains(&pt){failed.push(pt);}
         }Err(_)=>()}
     if !failed.is_empty(){println!("Failed points: {:?}", failed);}
+}
+fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
+    println!("starting Config listener on port: {}", port);
+    let sender = sender.clone();
+    let mut listen_addr = "192.168.1.125:".to_string();
+    listen_addr.push_str(&port.to_string());
+    thread::spawn(move || {
+        let listener = TcpListener::bind(listen_addr).unwrap();
+        for stream in listener.incoming() {
+            match stream {
+                Ok(mut streamm) => {
+                    let mut data = [0 as u8; 50];
+                    match streamm.read(&mut data){
+                        Ok(size) => {
+                           match str::from_utf8(&data[0..size]){
+                            Ok(string_out) => {
+                                let command: u8;
+                                println!("got config connection");
+                            match string_out{
+                                "gclear" => command = 1,
+                                "sclear" => command = 2,
+                                _ => {streamm.write(b"no").unwrap();
+                                    command = 0}
+                            }
+                            if command != 0{sender.send(command).unwrap();
+                            streamm.write(b"ok").unwrap();
+                            }}
+            Err(_) => {println!("fault");}
+            }}
+            Err(_) => {println!("Fault when reading data!");}
+            }}
+            Err(e) => {println!("Connection failed with code {}", e);}
+            }}
+        println!("Button Listen Thread Exiting!");
+    });
 }
