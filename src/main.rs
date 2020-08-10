@@ -5,7 +5,7 @@ use std::net::{TcpListener, TcpStream, ToSocketAddrs, Shutdown};
 use std::io::{Read, Write};
 use std::{str, thread, collections::HashMap, time::Duration};
 fn main() {
-    let conf_f = std::fs::File::open("/home/jake/Documents/EAS/Block2/ops_server/config.yaml").expect("e"); //tmp filepath
+    let conf_f = std::fs::File::open("/home/jake/Documents/EAS/ops_server/config.yaml").expect("e"); //tmp filepath
     let config: Config = serde_yaml::from_reader(conf_f).expect("Bad YAML config file!");
     config.print();
     let (s1, r1) = unbounded();
@@ -21,17 +21,18 @@ fn main() {
     general_alarm.spawn_button();
     silent_alarm.spawn_button();
     spawn_conf(8082, sCon);
-    let mut failed: Vec<u8> = vec!(); //list of failed points
+    spawn_EASrvr_fault(fault_r, &config);
     loop {
         general_alarm.process(&config);
         silent_alarm.process(&config);
-        deal_with_faults(fault_r.clone(), &mut failed);
         match rCon.try_recv(){
             Ok(command) => {match command{
                 1 => {general_alarm.activators.clear();
                     println!("Resetting general alarm")},
                 2 => {silent_alarm.activators.clear();
                     println!("Resetting silent alarm")},
+                3 => {fault_s.send(254).unwrap();
+                    println!("Resetting Failed Points List");}, //tell thread to dump faulted points
                 _ => {println!("Warning: anomalous data in confServer channel");}
             }}
             Err(_) => ()
@@ -45,12 +46,13 @@ struct Config{
     points: u8,
     general_port: u32,
     silent_port: u32,
-    loc_lookup: HashMap<String, String>,
+    button_lookup: HashMap<String, String>,
+    point_lookup: HashMap<u8, String>,
 }
 impl Config{
     fn print(&self){
         println!("Config file data: points={}, gp={}, sp={}", self.points, self.general_port, self.silent_port);
-        println!("Lookup table content: {:?}", self.loc_lookup);
+        println!("Lookup table content: {:?}", self.button_lookup);
     }
 }
 
@@ -114,7 +116,7 @@ impl Alarm{
     fn spawn_button(&self){
         println!("starting thread listening on port: {}", self.port);
         let sender = self.button_sender.clone();
-        let mut listen_addr = "192.168.1.125:".to_string();
+        let mut listen_addr = "192.168.1.126:".to_string();
         listen_addr.push_str(&self.port);
         thread::spawn(move || {
             let listener = TcpListener::bind(listen_addr).unwrap();
@@ -145,12 +147,12 @@ fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that
         let listener = self.revere_reciever.clone();
         let errsend = self.fault_send.clone();
         let mut alarm = self.kind.clone();
-        let llook = conf.loc_lookup.clone();
+        let llook = conf.button_lookup.clone();
         thread::spawn(move || {
             let mut target = "Point".to_string();
             let tgt: std::net::SocketAddr;
                 target.push_str(&i.to_string());
-                if i == 0{target = "surface".to_string()} //real points will start at 1
+                if i == 0{target = "EASrvr".to_string()} //real points will start at 1
                 target.push_str(":5400");
                 let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
                 match target.to_socket_addrs(){
@@ -159,7 +161,7 @@ fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that
                 }
                 match addrs_iter.next(){
                     Some(addr) => {tgt = addr;},
-                    None => {errsend.send(i).unwrap(); panic!("Bad Address");} //should probably set do_ip_fallback to true //TEMPORARY
+                    None => {errsend.send(i).unwrap(); panic!("Bad Address");} 
                 }
             let mut msg: Vec<String> = vec!();
             let mut clear: bool = false;
@@ -181,7 +183,7 @@ fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that
                 if clear{to_intosendable = String::from("clear");}
                 else {match llook.get(&activator){
                         Some(place) => {to_intosendable = place.to_string()}
-                        None => {to_intosendable = String::from("Nowhere")}
+                        None => {to_intosendable = String::from("Unknown")}
                     }}
                 let sendable = alarm.into_sendable(&to_intosendable);
                 match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {println!("Write fault! err: {}",e)}}
@@ -218,18 +220,11 @@ fn consume_revere_msgs(&self){
     }}
 }
 }
-//read the fault channel and add any unresponsive points to the faults vec to be sent to admin
-fn deal_with_faults(reader: crossbeam_channel::Receiver<u8>,failed: &mut Vec<u8>){
-    match reader.try_recv(){
-        Ok(pt)=> {
-            if !failed.contains(&pt){failed.push(pt);}
-        }Err(_)=>()}
-    if !failed.is_empty(){println!("Failed points: {:?}", failed);}
-}
+
 fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
     println!("starting Config listener on port: {}", port);
     let sender = sender.clone();
-    let mut listen_addr = "192.168.1.125:".to_string();
+    let mut listen_addr = "192.168.1.126:".to_string();
     listen_addr.push_str(&port.to_string());
     thread::spawn(move || {
         let listener = TcpListener::bind(listen_addr).unwrap();
@@ -246,6 +241,7 @@ fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
                             match string_out{
                                 "gclear" => command = 1,
                                 "sclear" => command = 2,
+                                "fclear" => command = 3,
                                 _ => {streamm.write(b"no").unwrap();
                                     command = 0}
                             }
@@ -261,3 +257,68 @@ fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
         println!("Button Listen Thread Exiting!");
     });
 }
+
+fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
+    println!("faultsend thread started");
+    let reader = reader0.clone();
+    let llook = conf.point_lookup.clone();
+    thread::spawn(move || {
+        let tgt: std::net::SocketAddr;
+            let target = "EASrvr:5400".to_string();
+            let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
+            loop {
+            match target.to_socket_addrs(){
+                Ok(addr) => {addrs_iter = addr;
+                            break;},
+                Err(_) => {println!("fault thread: not responding");}
+            }}
+            loop{
+            match addrs_iter.next(){
+                Some(addr) => {tgt = addr;
+                                break;},
+                None => {println!("fault thread: Bad Address");}
+            }}
+        let mut failed: Vec<u8> = vec!();
+        loop{
+            //check for messages
+            match reader.try_recv(){
+                Ok(pt)=> {
+                    if pt == 254{failed.clear();}
+                    if !failed.contains(&pt){failed.push(pt);}
+                }Err(_)=>()}
+            if !failed.is_empty() && !failed.contains(&254){println!("Failed points: {:?}", failed);}
+            for activator in failed.clone().into_iter(){
+            //communicate with point
+            match TcpStream::connect(tgt){
+                Ok(mut stream)=>{
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut to_sendable = String::from("Fault ");
+            if activator == 254 {to_sendable.push_str("clear");}
+            else{
+            match llook.get(&activator){
+                    Some(place) => {to_sendable.push_str(place)}
+                    None => {to_sendable.push_str("Unknown")}
+                }}
+                let sendable = to_sendable.into_bytes();
+            match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {println!("Write fault! err: {}",e)}}
+            let mut data = [0 as u8; 50];
+            match stream.read(&mut data){
+                Ok(size) => {
+                    match str::from_utf8(&data[0..size]){
+                        Ok(string_out) => {
+                            match string_out{
+                                "ok" => (),
+                                &_ => {println!("fault thread: internal error");}
+                            }}
+                        Err(e) => {println!("Client Read Error: {}",e);}
+                    }}
+                Err(e) => {println!("Fault when reading data: {}", e);}
+            }
+            stream.shutdown(Shutdown::Both).unwrap();
+            drop(stream);
+            thread::sleep(Duration::from_secs(3));}
+            Err(_) => {println!("EASrvr: internal  error");}
+        }
+    }}
+    });
+} 
