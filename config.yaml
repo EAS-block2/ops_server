@@ -5,5 +5,5 @@ button_lookup:
   "button0": "Test-Room"
   "button1": "Nowhere"
 point_lookup:
-  0: "Everywhere"
+  0: "Server-Interface"
   1: "Nowhere"

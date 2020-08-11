@@ -33,6 +33,14 @@ fn main() {
                     println!("Resetting silent alarm")},
                 3 => {fault_s.send(254).unwrap();
                     println!("Resetting Failed Points List");}, //tell thread to dump faulted points
+                4 => {general_alarm.activators.push("Admin-Override".to_string());
+                    println!("Override: activating general alarm");},
+                5 => {silent_alarm.activators.push("Admin-Override".to_string());
+                    println!("Override: Activating silent alarm");}
+                6 => {general_alarm.activators.clear();
+                    silent_alarm.activators.clear();
+                    fault_s.send(254).unwrap();
+                    println!("Resetting all alarms")}
                 _ => {println!("Warning: anomalous data in confServer channel");}
             }}
             Err(_) => ()
@@ -183,7 +191,8 @@ fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that
                 if clear{to_intosendable = String::from("clear");}
                 else {match llook.get(&activator){
                         Some(place) => {to_intosendable = place.to_string()}
-                        None => {to_intosendable = String::from("Unknown")}
+                        None => {if &activator == &String::from("Admin-Override"){to_intosendable = activator}
+                            else{to_intosendable = String::from("Unknown")}}
                     }}
                 let sendable = alarm.into_sendable(&to_intosendable);
                 match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {println!("Write fault! err: {}",e)}}
@@ -242,6 +251,9 @@ fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
                                 "gclear" => command = 1,
                                 "sclear" => command = 2,
                                 "fclear" => command = 3,
+                                "gset"   => command = 4,
+                                "sset"   => command = 5,
+                                "aclear" => command = 6,
                                 _ => {streamm.write(b"no").unwrap();
                                     command = 0}
                             }
@@ -293,7 +305,8 @@ fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
                 Ok(mut stream)=>{
             stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
             let mut to_sendable = String::from("Fault ");
-            if activator == 254 {to_sendable.push_str("clear");}
+            if activator == 254 {to_sendable.push_str("clear");
+                failed.clear();}
             else{
             match llook.get(&activator){
                     Some(place) => {to_sendable.push_str(place)}
@@ -314,10 +327,14 @@ fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
                     }}
                 Err(e) => {println!("Fault when reading data: {}", e);}
             }
-            stream.shutdown(Shutdown::Both).unwrap();
+            match stream.shutdown(Shutdown::Both){
+                Ok(_) =>(),
+                Err(_) => {println!("Config Server Error");}
+            }
             drop(stream);
             thread::sleep(Duration::from_secs(3));}
-            Err(_) => {println!("EASrvr: internal  error");}
+            Err(_) => {println!("EASrvr: internal  error");
+                    thread::sleep(Duration::from_secs(2))}
         }
     }}
     });
