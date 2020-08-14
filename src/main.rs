@@ -5,7 +5,7 @@ use std::net::{TcpListener, TcpStream, ToSocketAddrs, Shutdown};
 use std::io::{Read, Write};
 use std::{str, thread, collections::HashMap, time::Duration};
 fn main() {
-    let conf_f = std::fs::File::open("/home/jake/Documents/EAS/ops_server/config.yaml").expect("e"); //tmp filepath
+    let conf_f = std::fs::File::open("config.yaml").expect("Can't File Config"); //tmp filepath
     let config: Config = serde_yaml::from_reader(conf_f).expect("Bad YAML config file!");
     config.print();
     let (s1, r1) = unbounded();
@@ -124,10 +124,20 @@ impl Alarm{
     fn spawn_button(&self){
         println!("starting thread listening on port: {}", self.port);
         let sender = self.button_sender.clone();
-        let mut listen_addr = "192.168.1.126:".to_string();
+        let mut listen_addr = "EASops:".to_string();
+        let tgt: std::net::SocketAddr; //real points will start at 1
         listen_addr.push_str(&self.port);
+        let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
+        match listen_addr.to_socket_addrs(){
+            Ok(addr) => addrs_iter = addr,
+            Err(_) => {panic!("Address resolution fault.");}
+        }
+        match addrs_iter.next(){
+            Some(addr) => {tgt = addr;},
+            None => {panic!("Address resolution fault.");} 
+        }
         thread::spawn(move || {
-            let listener = TcpListener::bind(listen_addr).unwrap();
+            let listener = TcpListener::bind(tgt).unwrap();
             for stream in listener.incoming() {
                 match stream {
                     Ok(mut streamm) => {
@@ -233,10 +243,20 @@ fn consume_revere_msgs(&self){
 fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
     println!("starting Config listener on port: {}", port);
     let sender = sender.clone();
-    let mut listen_addr = "192.168.1.126:".to_string();
-    listen_addr.push_str(&port.to_string());
+    let mut listen_addr = "EASops:".to_string();
+        let tgt: std::net::SocketAddr; //real points will start at 1
+        listen_addr.push_str(&port.to_string());
+        let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
+        match listen_addr.to_socket_addrs(){
+            Ok(addr) => addrs_iter = addr,
+            Err(_) => {panic!("Address resolution fault.");}
+        }
+        match addrs_iter.next(){
+            Some(addr) => {tgt = addr;},
+            None => {panic!("Address resolution fault.");} 
+        }
     thread::spawn(move || {
-        let listener = TcpListener::bind(listen_addr).unwrap();
+        let listener = TcpListener::bind(tgt).unwrap();
         for stream in listener.incoming() {
             match stream {
                 Ok(mut streamm) => {
@@ -297,7 +317,8 @@ fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
                 Ok(pt)=> {
                     if pt == 254{failed.clear();}
                     if !failed.contains(&pt){failed.push(pt);}
-                }Err(_)=>()}
+                }Err(_)=>{thread::sleep(Duration::from_millis(20));}
+            }
             if !failed.is_empty() && !failed.contains(&254){println!("Failed points: {:?}", failed);}
             for activator in failed.clone().into_iter(){
             //communicate with point
@@ -334,7 +355,7 @@ fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
             drop(stream);
             thread::sleep(Duration::from_secs(3));}
             Err(_) => {println!("EASrvr: internal  error");
-                    thread::sleep(Duration::from_secs(2))}
+                    thread::sleep(Duration::from_secs(1))}
         }
     }}
     });
