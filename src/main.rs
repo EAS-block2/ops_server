@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::net::{TcpListener, TcpStream, ToSocketAddrs, Shutdown};
 use std::io::{Read, Write};
 use std::{str, thread, collections::HashMap, time::Duration};
+use log::{warn, error};
 fn main() {
     let conf_f = std::fs::File::open("config.yaml").expect("Can't File Config"); //tmp filepath
     let config: Config = serde_yaml::from_reader(conf_f).expect("Bad YAML config file!");
@@ -14,9 +15,9 @@ fn main() {
     let (s4, r4) = unbounded();
     let (sCon, rCon) = unbounded();
     let (fault_s, fault_r) = unbounded();
-    let mut general_alarm = Alarm {kind: AlarmType::General, port: config.general_port.to_string(), button_sender: s1, button_reciever: r1,
+    let mut general_alarm = Alarm {kind: AlarmType::General, ports: config.general_ports.clone(), button_sender: s1, button_reciever: r1,
         revere_sender: s3, revere_reciever: r3, fault_send: fault_s.clone(), activators: vec!(), active:false,did_spawn:false,did_clear:true};
-    let mut silent_alarm = Alarm {kind: AlarmType::Silent, port: config.silent_port.to_string(), button_sender: s2, button_reciever: r2,
+    let mut silent_alarm = Alarm {kind: AlarmType::Silent, ports: config.silent_ports.clone(), button_sender: s2, button_reciever: r2,
         revere_sender: s4, revere_reciever: r4, fault_send: fault_s.clone(), activators: vec!(), active:false,did_spawn:false,did_clear:true};
     general_alarm.spawn_button();
     silent_alarm.spawn_button();
@@ -41,7 +42,7 @@ fn main() {
                     silent_alarm.activators.clear();
                     fault_s.send(254).unwrap();
                     println!("Resetting all alarms")}
-                _ => {println!("Warning: anomalous data in confServer channel");}
+                _ => {warn!("anomalous data in confServer channel")}
             }}
             Err(_) => ()
         }
@@ -52,14 +53,14 @@ fn main() {
 #[derive(Deserialize)]
 struct Config{
     points: u8,
-    general_port: u32,
-    silent_port: u32,
+    general_ports: Vec<u32>,
+    silent_ports: Vec<u32>,
     button_lookup: HashMap<String, String>,
     point_lookup: HashMap<u8, String>,
 }
 impl Config{
     fn print(&self){
-        println!("Config file data: points={}, gp={}, sp={}", self.points, self.general_port, self.silent_port);
+        println!("Config file data: points={}, gp={:?}, sp={:?}", self.points, self.general_ports, self.silent_ports);
         println!("Lookup table content: {:?}", self.button_lookup);
     }
 }
@@ -84,7 +85,7 @@ impl AlarmType{
 }
 struct Alarm{
     kind: AlarmType,
-    port: String,
+    ports: Vec<u32>,
     button_sender: crossbeam_channel::Sender<String>,
     button_reciever: crossbeam_channel::Receiver<String>,
     revere_sender: crossbeam_channel::Sender<Vec<String>>,
@@ -122,11 +123,12 @@ impl Alarm{
                 Ok(_)=>(), Err(e)=>{println!("Revere not working due to {}", e)}}} //sends more messages than necessary, but that's preferable than too few
     }
     fn spawn_button(&self){
-        println!("starting thread listening on port: {}", self.port);
+        for port in &self.ports{
+        println!("starting thread listening on port: {}", port);
         let sender = self.button_sender.clone();
         let mut listen_addr = "EASops:".to_string();
         let tgt: std::net::SocketAddr; //real points will start at 1
-        listen_addr.push_str(&self.port);
+        listen_addr.push_str(&port.to_string());
         let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
         match listen_addr.to_socket_addrs(){
             Ok(addr) => addrs_iter = addr,
@@ -157,7 +159,7 @@ impl Alarm{
                 }}
             println!("Button Listen Thread Exiting!");
         });
-    }
+    }}
     //create threads to notify strobes and signs of an emergency
 fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that a possible blocking operation only effects max. 1 point
     for i in 0..conf.points {

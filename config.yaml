@@ -1,6 +1,10 @@
 points: 2
-general_port: 5432
-silent_port: 5433
+general_ports:
+  - 5432
+  - 6432
+silent_ports:
+  - 5433
+  - 6433
 button_lookup:
   "button0": "Test-Room"
   "button1": "Nowhere"
