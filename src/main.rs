@@ -3,10 +3,15 @@ use serde_yaml;
 use serde::Deserialize;
 use std::net::{TcpListener, TcpStream, ToSocketAddrs, Shutdown};
 use std::io::{Read, Write};
-use std::{str, thread, collections::HashMap, time::Duration};
-use log::{warn, error};
+use std::{str, thread, collections::HashMap, time::Duration, fs::File};
+use log::{warn, error, info, debug};
+use simplelog;
 fn main() {
-    let conf_f = std::fs::File::open("config.yaml").expect("Can't File Config"); //tmp filepath
+    simplelog::CombinedLogger::init(vec![
+            simplelog::TermLogger::new(simplelog::LevelFilter::Info, simplelog::Config::default(), simplelog::TerminalMode::Mixed),
+            simplelog::WriteLogger::new(simplelog::LevelFilter::Warn, simplelog::Config::default(), File::create("current.log").unwrap()),
+        ]).unwrap();
+    let conf_f = File::open("config.yaml").expect("Can't File Config"); //tmp filepath
     let config: Config = serde_yaml::from_reader(conf_f).expect("Bad YAML config file!");
     config.print();
     let (s1, r1) = unbounded();
@@ -29,19 +34,19 @@ fn main() {
         match rCon.try_recv(){
             Ok(command) => {match command{
                 1 => {general_alarm.activators.clear();
-                    println!("Resetting general alarm")},
+                    info!("Resetting general alarm")},
                 2 => {silent_alarm.activators.clear();
-                    println!("Resetting silent alarm")},
+                    info!("Resetting silent alarm")},
                 3 => {fault_s.send(254).unwrap();
-                    println!("Resetting Failed Points List");}, //tell thread to dump faulted points
+                    info!("Resetting Failed Points List");}, //tell thread to dump faulted points
                 4 => {general_alarm.activators.push("Admin-Override".to_string());
-                    println!("Override: activating general alarm");},
+                    info!("Override: activating general alarm");},
                 5 => {silent_alarm.activators.push("Admin-Override".to_string());
-                    println!("Override: Activating silent alarm");}
+                    info!("Override: Activating silent alarm");}
                 6 => {general_alarm.activators.clear();
                     silent_alarm.activators.clear();
                     fault_s.send(254).unwrap();
-                    println!("Resetting all alarms")}
+                    info!("Resetting all alarms")}
                 _ => {warn!("anomalous data in confServer channel")}
             }}
             Err(_) => ()
@@ -60,8 +65,8 @@ struct Config{
 }
 impl Config{
     fn print(&self){
-        println!("Config file data: points={}, gp={:?}, sp={:?}", self.points, self.general_ports, self.silent_ports);
-        println!("Lookup table content: {:?}", self.button_lookup);
+        info!("Config file data: points={}, gp={:?}, sp={:?}", self.points, self.general_ports, self.silent_ports);
+        info!("Lookup table content: {:?}", self.button_lookup);
     }
 }
 
@@ -112,7 +117,7 @@ impl Alarm{
             if !self.did_clear{ //tells revere threads to tell points that all is well, then to kill themselves
                 self.consume_revere_msgs();
                 for _ in 0..(conf.points){self.revere_sender.send(vec!("clear".to_string())).unwrap();}
-                println!("stopped reveres!");
+                debug!("stopped reveres!");
                 thread::sleep(Duration::from_secs(6));
                 self.consume_revere_msgs();
                 self.did_clear = true;}}
@@ -120,11 +125,11 @@ impl Alarm{
             self.did_spawn = true;
             self.did_clear = false;}
             for _ in 0..(conf.points){match self.revere_sender.send(self.activators.clone()){
-                Ok(_)=>(), Err(e)=>{println!("Revere not working due to {}", e)}}} //sends more messages than necessary, but that's preferable than too few
+                Ok(_)=>(), Err(e)=>{warn!("Revere not working due to {}", e)}}} //sends more messages than necessary, but that's preferable than too few
     }
     fn spawn_button(&self){
         for port in &self.ports{
-        println!("starting thread listening on port: {}", port);
+        debug!("starting thread listening on port: {}", port);
         let sender = self.button_sender.clone();
         let mut listen_addr = "EASops:".to_string();
         let tgt: std::net::SocketAddr; //real points will start at 1
@@ -151,19 +156,19 @@ impl Alarm{
                                 sender.send(string_out.to_string()).unwrap();
                                 streamm.write(b"ok").unwrap();
                                 }
-                Err(_) => {println!("fault");}
+                Err(_) => {}
                 }}
-                Err(_) => {println!("Fault when reading data!");}
+                Err(_) => {}
                 }}
-                Err(e) => {println!("Connection failed with code {}", e);}
+                Err(e) => {warn!("Button thread: Connection failed with code {}", e);}
                 }}
-            println!("Button Listen Thread Exiting!");
+            error!("Button Listen Thread Exiting!");
         });
     }}
     //create threads to notify strobes and signs of an emergency
 fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that a possible blocking operation only effects max. 1 point
     for i in 0..conf.points {
-        println!("Starting Revere #{}", i);
+        debug!("Starting Revere #{}", i);
         let listener = self.revere_reciever.clone();
         let errsend = self.fault_send.clone();
         let mut alarm = self.kind.clone();
@@ -207,7 +212,7 @@ fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that
                             else{to_intosendable = String::from("Unknown")}}
                     }}
                 let sendable = alarm.into_sendable(&to_intosendable);
-                match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {println!("Write fault! err: {}",e)}}
+                match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {warn!("Revere Write fault! err: {}",e)}}
                 let mut data = [0 as u8; 50];
                 match stream.read(&mut data){
                     Ok(size) => {
@@ -217,9 +222,9 @@ fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that
                                    "ok" => (),
                                    &_ => {errsend.send(i).unwrap(); panic!("Point #{}: internal fatal error", i);}
                                }}
-                           Err(e) => {println!("Client Read Error: {}",e);}
+                           Err(e) => {warn!("Revere Client Read Error: {}",e);}
                        }}
-                    Err(e) => {println!("Fault when reading data: {}", e);}
+                    Err(e) => {warn!("Revere : Fault when reading data: {}", e);}
                 }
                 stream.shutdown(Shutdown::Both).unwrap();
                 drop(stream);
@@ -227,7 +232,7 @@ fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that
                 Err(_) => {errsend.send(i).unwrap(); panic!("Point #{}: internal fatal error", i);}
             }
      }if clear {break;}}
-            println!("Exiting Thread");
+            debug!("Exiting Thread");
         });
     }
 } 
@@ -243,7 +248,7 @@ fn consume_revere_msgs(&self){
 }
 
 fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
-    println!("starting Config listener on port: {}", port);
+    info!("starting Config listener on port: {}", port);
     let sender = sender.clone();
     let mut listen_addr = "EASops:".to_string();
         let tgt: std::net::SocketAddr; //real points will start at 1
@@ -268,7 +273,7 @@ fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
                            match str::from_utf8(&data[0..size]){
                             Ok(string_out) => {
                                 let command: u8;
-                                println!("got config connection");
+                                debug!("got config connection");
                             match string_out{
                                 "gclear" => command = 1,
                                 "sclear" => command = 2,
@@ -282,18 +287,18 @@ fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
                             if command != 0{sender.send(command).unwrap();
                             streamm.write(b"ok").unwrap();
                             }}
-            Err(_) => {println!("fault");}
+            Err(_) => {warn!("Config Server Listen: fault");}
             }}
-            Err(_) => {println!("Fault when reading data!");}
+            Err(_) => {warn!("Config Server Listen: Fault when reading data!");}
             }}
-            Err(e) => {println!("Connection failed with code {}", e);}
+            Err(e) => {warn!("Config Server Listen: Connection failed with code {}", e);}
             }}
-        println!("Button Listen Thread Exiting!");
+        error!("Config Server Listen Thread Exiting!");
     });
 }
 
 fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
-    println!("faultsend thread started");
+    debug!("faultsend thread started");
     let reader = reader0.clone();
     let llook = conf.point_lookup.clone();
     thread::spawn(move || {
@@ -304,13 +309,14 @@ fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
             match target.to_socket_addrs(){
                 Ok(addr) => {addrs_iter = addr;
                             break;},
-                Err(_) => {println!("fault thread: not responding");}
+                Err(_) => {error!("EASrvr is not responding!");
+                            thread::sleep(Duration::from_millis(500));}
             }}
             loop{
             match addrs_iter.next(){
                 Some(addr) => {tgt = addr;
                                 break;},
-                None => {println!("fault thread: Bad Address");}
+                None => {error!("fault thread: Bad Address");}
             }}
         let mut failed: Vec<u8> = vec!();
         loop{
@@ -321,7 +327,7 @@ fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
                     if !failed.contains(&pt){failed.push(pt);}
                 }Err(_)=>{thread::sleep(Duration::from_millis(20));}
             }
-            if !failed.is_empty() && !failed.contains(&254){println!("Failed points: {:?}", failed);}
+            if !failed.is_empty() && !failed.contains(&254){warn!("Failed points: {:?}", failed);}
             for activator in failed.clone().into_iter(){
             //communicate with point
             match TcpStream::connect(tgt){
@@ -336,7 +342,7 @@ fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
                     None => {to_sendable.push_str("Unknown")}
                 }}
                 let sendable = to_sendable.into_bytes();
-            match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {println!("Write fault! err: {}",e)}}
+            match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {warn!("Fault Thread: Write fault! err: {}",e)}}
             let mut data = [0 as u8; 50];
             match stream.read(&mut data){
                 Ok(size) => {
@@ -344,19 +350,19 @@ fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
                         Ok(string_out) => {
                             match string_out{
                                 "ok" => (),
-                                &_ => {println!("fault thread: internal error");}
+                                &_ => {error!("Fault thread: internal error");}
                             }}
-                        Err(e) => {println!("Client Read Error: {}",e);}
+                        Err(e) => {error!("Fault thread: Client Read Error: {}",e);}
                     }}
-                Err(e) => {println!("Fault when reading data: {}", e);}
+                Err(e) => {error!("Fault when reading data: {}", e);}
             }
             match stream.shutdown(Shutdown::Both){
                 Ok(_) =>(),
-                Err(_) => {println!("Config Server Error");}
+                Err(_) => {error!("Config Server Error");}
             }
             drop(stream);
             thread::sleep(Duration::from_secs(3));}
-            Err(_) => {println!("EASrvr: internal  error");
+            Err(_) => {error!("EASrvr: internal  error");
                     thread::sleep(Duration::from_secs(1))}
         }
     }}
