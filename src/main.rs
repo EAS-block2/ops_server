@@ -132,18 +132,16 @@ impl Alarm{
         debug!("starting thread listening on port: {}", port);
         let sender = self.button_sender.clone();
         let mut listen_addr = "EASops:".to_string();
-        let tgt: std::net::SocketAddr; //real points will start at 1
         listen_addr.push_str(&port.to_string());
-        let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
-        match listen_addr.to_socket_addrs(){
-            Ok(addr) => addrs_iter = addr,
-            Err(_) => {panic!("Address resolution fault.");}
-        }
-        match addrs_iter.next(){
-            Some(addr) => {tgt = addr;},
-            None => {panic!("Address resolution fault.");} 
-        }
         thread::spawn(move || {
+            let tgt: std::net::SocketAddr; //real points will start at 1
+            let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
+            match listen_addr.to_socket_addrs(){
+                Ok(addr) => addrs_iter = addr,
+                Err(_) => {panic!("Address resolution fault.");}}
+            match addrs_iter.next(){
+                Some(addr) => {tgt = addr;},
+                None => {panic!("Address resolution fault.");}}
             let listener = TcpListener::bind(tgt).unwrap();
             for stream in listener.incoming() {
                 match stream {
@@ -251,8 +249,9 @@ fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
     info!("starting Config listener on port: {}", port);
     let sender = sender.clone();
     let mut listen_addr = "EASops:".to_string();
-        let tgt: std::net::SocketAddr; //real points will start at 1
         listen_addr.push_str(&port.to_string());
+    thread::spawn(move || {
+        let tgt: std::net::SocketAddr; //real points will start at 1
         let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
         match listen_addr.to_socket_addrs(){
             Ok(addr) => addrs_iter = addr,
@@ -262,7 +261,6 @@ fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
             Some(addr) => {tgt = addr;},
             None => {panic!("Address resolution fault.");} 
         }
-    thread::spawn(move || {
         let listener = TcpListener::bind(tgt).unwrap();
         for stream in listener.incoming() {
             match stream {
