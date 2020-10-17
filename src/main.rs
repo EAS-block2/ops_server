@@ -7,10 +7,14 @@ use std::{str, thread, collections::HashMap, time::{Duration,SystemTime}, fs::Fi
 use log::{warn, error, info, debug};
 use simplelog;
 fn main() {
-    simplelog::CombinedLogger::init(vec![
-            simplelog::TermLogger::new(simplelog::LevelFilter::Debug, simplelog::Config::default(), simplelog::TerminalMode::Mixed),
-            simplelog::WriteLogger::new(simplelog::LevelFilter::Warn, simplelog::Config::default(), File::create("current.log").unwrap()),
-        ]).unwrap();
+    if cfg!(debug_assertions){simplelog::CombinedLogger::init(vec![
+        simplelog::TermLogger::new(simplelog::LevelFilter::Debug, simplelog::Config::default(), simplelog::TerminalMode::Mixed),
+        simplelog::WriteLogger::new(simplelog::LevelFilter::Warn, simplelog::Config::default(), File::create("current.log").unwrap()),
+        ]).unwrap();}
+    else{simplelog::CombinedLogger::init(vec![
+        simplelog::TermLogger::new(simplelog::LevelFilter::Info, simplelog::Config::default(), simplelog::TerminalMode::Mixed),
+        simplelog::WriteLogger::new(simplelog::LevelFilter::Warn, simplelog::Config::default(), File::create("current.log").unwrap()),
+        ]).unwrap();}
     let conf_f = File::open("config.yaml").expect("Can't File Config"); //tmp filepath
     let config: Config = serde_yaml::from_reader(conf_f).expect("Bad YAML config file!");
     let (s1, r1) = unbounded(); // general alarm button communications
@@ -52,7 +56,8 @@ fn main() {
                     info!("Resetting all alarms")}
                 _ => {warn!("anomalous data in confServer channel")}
             }}
-            Err(_) => ()
+            Err(e) => (if e != crossbeam_channel::TryRecvError::Empty{
+                error!("Can't read admin channel: {}",e)})
         }
         thread::sleep(Duration::from_secs(2));
     }
@@ -101,7 +106,8 @@ struct Alarm{
     did_clear: bool,
 }
 impl Alarm{
-    fn process(&mut self, conf: &Config, fsnd: &crossbeam_channel::Sender<u8>){ //does the actual work in terms of coordinating alarm conditions
+    //prcess does the actual work in terms of coordinating alarm conditions
+    fn process(&mut self, conf: &Config, fsnd: &crossbeam_channel::Sender<u8>){ 
         match self.button_reciever.try_recv(){ //get data from respective button thread
             Ok(who) => {
                 if !self.activators.contains(&who){self.activators.push(who.clone());}}//check if alarm activator has already been recorded
@@ -124,7 +130,7 @@ impl Alarm{
             self.did_spawn = true;
             self.did_clear = false;}
             for _ in 0..(conf.points+1){match self.revere_sender.send(self.activators.clone()){
-                Ok(_)=>(), Err(e)=>{warn!("Revere not working due to {}", e)}}} //sends more messages than necessary, but that's preferable than too few
+                Ok(_)=>(), Err(e)=>{error!("Revere not working due to {}", e)}}}
         self.revive_reveres(conf, fsnd);
     }
     fn revive_reveres(&mut self, conf: &Config, fault_send: &crossbeam_channel::Sender<u8>){ //tries to revive reveres every 10 seconds
@@ -134,7 +140,7 @@ impl Alarm{
                 self.revive_timer = SystemTime::now();
                 for point in self.fault_recieve.clone(){
                     match fault_send.send(point) {Ok(_)=> {}, 
-                        Err(e)=> {warn!("I can't tell fault handler about failed points because {}",e)}}
+                        Err(e)=> {error!("I can't tell fault handler about failed points because {}",e)}}
                     self.spawn_revere(conf, point);}
                 }, _ => ()}
     }
@@ -169,7 +175,7 @@ impl Alarm{
                 }}
                 Err(_) => {}
                 }}
-                Err(e) => {warn!("Button thread: Connection failed with code {}", e);}
+                Err(e) => {error!("Button thread: Connection failed with code {}", e);}
                 }}
             error!("Button Listen Thread Exiting!");
         });
@@ -263,15 +269,15 @@ fn spawn_admin(port: u32, sender: crossbeam_channel::Sender<u8>){
     let mut listen_addr = "EASops:".to_string();
         listen_addr.push_str(&port.to_string());
     thread::spawn(move || {
-        let tgt: std::net::SocketAddr; //real points will start at 1
+        let tgt: std::net::SocketAddr;
         let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
         match listen_addr.to_socket_addrs(){
             Ok(addr) => addrs_iter = addr,
-            Err(_) => {panic!("Address resolution fault.");}
+            Err(_) => {panic!("Admin thread: can't resolve own address!");}
         }
         match addrs_iter.next(){
             Some(addr) => {tgt = addr;},
-            None => {panic!("Address resolution fault.");} 
+            None => {panic!("Admin thread: can't resolve own address!");} 
         }
         let listener = TcpListener::bind(tgt).unwrap();
         for stream in listener.incoming() {
@@ -292,11 +298,12 @@ fn spawn_admin(port: u32, sender: crossbeam_channel::Sender<u8>){
                                 "sset"   => command = 5,
                                 "aclear" => command = 6,
                                 _ => {streamm.write(b"no").unwrap();
+                                    warn!("EASrvr is sending anomalous communications");
                                     command = 0}
                             }
                             if command != 0{sender.send(command).unwrap();
                             streamm.write(b"ok").unwrap();
-                            }}
+                            }else{info!("Ignoring EASrvr command")}}
             Err(_) => {warn!("Config Server Listen: fault");}
             }}
             Err(_) => {warn!("Config Server Listen: Fault when reading data!");}
@@ -352,7 +359,7 @@ fn spawn_easrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
                     None => {to_sendable.push_str("Unknown")}
                 }}
                 let sendable = to_sendable.into_bytes();
-            match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {warn!("Fault Thread: Write fault! err: {}",e)}}
+            match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {error!("Fault Thread: Write fault! err: {}",e)}}
             let mut data = [0 as u8; 50];
             match stream.read(&mut data){
                 Ok(size) => {
