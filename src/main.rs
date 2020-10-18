@@ -39,7 +39,8 @@ fn main() {
         general_alarm.process(&config, &tfault_s);
         silent_alarm.process(&config, &tfault_s);
         match admin_r.try_recv(){
-            Ok(command) => {match command{
+            Ok(command) => {debug!("main thread: got command {}",command);
+                match command{
                 1 => {general_alarm.activators.clear();
                     info!("Resetting general alarm")},
                 2 => {silent_alarm.activators.clear();
@@ -113,7 +114,7 @@ impl Alarm{
                 if !self.activators.contains(&who){self.activators.push(who.clone());}}//check if alarm activator has already been recorded
             Err(e) => {
                 match e {
-                crossbeam_channel::TryRecvError::Empty => (), //if we get no responce it's technically an err but not a worrysome one
+                crossbeam_channel::TryRecvError::Empty => (), //if no responce it's technically an err
                 crossbeam_channel::TryRecvError::Disconnected => {
                     self.spawn_button(); //assume the buton thread crashed, try to respawn it
                 }}}}
@@ -213,7 +214,6 @@ fn spawn_revere(&self, conf: &Config, pointnum: u8){ //so many threads are used 
                     else {msg = e}}
                 Err(_) => (),
             }
-            debug!("Message to send is: {:?}",&msg);
             for activator in msg.clone().into_iter(){
             //communicate with point
             match TcpStream::connect(tgt){
@@ -263,9 +263,9 @@ fn consume_revere_msgs(&self){
     }}
 }}
 
-fn spawn_admin(port: u32, sender: crossbeam_channel::Sender<u8>){
+fn spawn_admin(port: u32, tsender: crossbeam_channel::Sender<u8>){
     debug!("starting Config server listener on port: {}", port);
-    let sender = sender.clone();
+    let sender = tsender.clone();
     let mut listen_addr = "EASops:".to_string();
         listen_addr.push_str(&port.to_string());
     thread::spawn(move || {
@@ -301,9 +301,12 @@ fn spawn_admin(port: u32, sender: crossbeam_channel::Sender<u8>){
                                     warn!("EASrvr is sending anomalous communications");
                                     command = 0}
                             }
-                            if command != 0{sender.send(command).unwrap();
+                            if command != 0{match sender.send(command){
+                                Ok(_) => debug!("Passed {} into main channel",command),
+                                Err(e) => error!("Can't tell main thread about admin command:  {}",e)}
                             streamm.write(b"ok").unwrap();
-                            }else{info!("Ignoring EASrvr command")}}
+                            debug!("told EASrvr ok");}
+                            else{info!("Ignoring EASrvr command")}}
             Err(_) => {warn!("Config Server Listen: fault");}
             }}
             Err(_) => {warn!("Config Server Listen: Fault when reading data!");}
