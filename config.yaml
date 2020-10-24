@@ -10,4 +10,5 @@ button_lookup:
   "button1": "Nowhere"
 point_lookup:
   0: "Server-Interface"
-  1: "Nowhere"
+  1: "Point\ 1"
+  2: "Point-2"
