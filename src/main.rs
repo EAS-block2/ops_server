@@ -7,10 +7,14 @@ use std::{str, thread, collections::HashMap, time::Duration, fs::File};
 use log::{warn, error, info, debug};
 use simplelog;
 fn main() {
-    simplelog::CombinedLogger::init(vec![
-            simplelog::TermLogger::new(simplelog::LevelFilter::Info, simplelog::Config::default(), simplelog::TerminalMode::Mixed),
-            simplelog::WriteLogger::new(simplelog::LevelFilter::Warn, simplelog::Config::default(), File::create("current.log").unwrap()),
-        ]).unwrap();
+    if cfg!(debug_assertions){simplelog::CombinedLogger::init(vec![
+        simplelog::TermLogger::new(simplelog::LevelFilter::Debug, simplelog::Config::default(), simplelog::TerminalMode::Mixed),
+        simplelog::WriteLogger::new(simplelog::LevelFilter::Warn, simplelog::Config::default(), File::create("current.log").unwrap()),
+        ]).unwrap();}
+    else{simplelog::CombinedLogger::init(vec![
+        simplelog::TermLogger::new(simplelog::LevelFilter::Info, simplelog::Config::default(), simplelog::TerminalMode::Mixed),
+        simplelog::WriteLogger::new(simplelog::LevelFilter::Warn, simplelog::Config::default(), File::create("current.log").unwrap()),
+        ]).unwrap();}
     let conf_f = File::open("config.yaml").expect("Can't File Config"); //tmp filepath
     let config: Config = serde_yaml::from_reader(conf_f).expect("Bad YAML config file!");
     config.print();
@@ -172,6 +176,7 @@ fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that
         let mut alarm = self.kind.clone();
         let llook = conf.button_lookup.clone();
         thread::spawn(move || {
+            let mut non_ok = 0;
             let mut target = "Point".to_string();
             let tgt: std::net::SocketAddr;
                 target.push_str(&i.to_string());
@@ -180,7 +185,7 @@ fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that
                 let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
                 match target.to_socket_addrs(){
                     Ok(addr) => addrs_iter = addr,
-                    Err(_) => {errsend.send(i).unwrap(); panic!("Cannot Resolve Point {}", i);}
+                    Err(e) => {errsend.send(i).unwrap(); panic!("Cannot Resolve Point {} due to {}",i,e);}
                 }
                 match addrs_iter.next(){
                     Some(addr) => {tgt = addr;},
@@ -218,11 +223,13 @@ fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that
                            Ok(string_out) => {
                                match string_out{
                                    "ok" => (),
-                                   &_ => {errsend.send(i).unwrap(); panic!("Point #{}: internal fatal error", i);}
+                                   &_ => {error!("point {} sent non-ok responce, that ain't good.",i);
+                                            non_ok += 1;
+                                            if non_ok >= 4 {panic!("Point {} sent too many erroneous responces, panicking",i)}}
                                }}
-                           Err(e) => {warn!("Revere Client Read Error: {}",e);}
+                           Err(e) => {warn!("Revere {} Client Read Error: {}",i,e);}
                        }}
-                    Err(e) => {warn!("Revere : Fault when reading data: {}", e);}
+                    Err(e) => {warn!("Revere {} Fault when reading data: {}",i,e);}
                 }
                 stream.shutdown(Shutdown::Both).unwrap();
                 drop(stream);
