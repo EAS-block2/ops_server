@@ -3,7 +3,7 @@ use serde_yaml;
 use serde::Deserialize;
 use std::net::{TcpListener, TcpStream, ToSocketAddrs, Shutdown};
 use std::io::{Read, Write};
-use std::{str, thread, collections::HashMap, time::Duration, fs::File};
+use std::{str, thread, collections::HashMap, time::{Duration,SystemTime}, fs::File, cmp::Ordering};
 use log::{warn, error, info, debug};
 use simplelog;
 fn main() {
@@ -17,31 +17,35 @@ fn main() {
         ]).unwrap();}
     let conf_f = File::open("config.yaml").expect("Can't File Config"); //tmp filepath
     let config: Config = serde_yaml::from_reader(conf_f).expect("Bad YAML config file!");
-    config.print();
-    let (s1, r1) = unbounded();
-    let (s2, r2) = unbounded();
-    let (s3, r3) = unbounded();
-    let (s4, r4) = unbounded();
-    let (sCon, rCon) = unbounded();
-    let (fault_s, fault_r) = unbounded();
+    let (s1, r1) = unbounded(); // general alarm button communications
+    let (s2, r2) = unbounded(); // silent alarm button communications
+    let (s3, r3) = unbounded(); // general alarm revere communctaions
+    let (s4, r4) = unbounded(); // silent alarm revere communications
+    let (admin_s, admin_r) = unbounded(); // easrvr admin communications thread channel
+    let (gfault_s, gfault_r) = unbounded(); //general alarm internal fault channel
+    let (sfault_s, sfault_r) = unbounded(); //silent alarm internal fault channel
+    let (tfault_s, tfault_r) = unbounded(); //unrecoverable faults
     let mut general_alarm = Alarm {kind: AlarmType::General, ports: config.general_ports.clone(), button_sender: s1, button_reciever: r1,
-        revere_sender: s3, revere_reciever: r3, fault_send: fault_s.clone(), activators: vec!(), active:false,did_spawn:false,did_clear:true};
+        revere_sender: s3, revere_reciever: r3, fault_send: gfault_s, fault_recieve: gfault_r, 
+        revive_timer: SystemTime::UNIX_EPOCH, activators: vec!(), active:false,did_spawn:false,did_clear:true};
     let mut silent_alarm = Alarm {kind: AlarmType::Silent, ports: config.silent_ports.clone(), button_sender: s2, button_reciever: r2,
-        revere_sender: s4, revere_reciever: r4, fault_send: fault_s.clone(), activators: vec!(), active:false,did_spawn:false,did_clear:true};
+        revere_sender: s4, revere_reciever: r4, fault_send: sfault_s, fault_recieve: sfault_r, 
+        revive_timer: SystemTime::UNIX_EPOCH, activators: vec!(), active:false,did_spawn:false,did_clear:true};
     general_alarm.spawn_button();
     silent_alarm.spawn_button();
-    spawn_conf(8082, sCon);
-    spawn_EASrvr_fault(fault_r, &config);
+    spawn_admin(8082, admin_s);
+    spawn_easrvr_fault(tfault_r, &config);
     loop {
-        general_alarm.process(&config);
-        silent_alarm.process(&config);
-        match rCon.try_recv(){
-            Ok(command) => {match command{
+        general_alarm.process(&config, &tfault_s);
+        silent_alarm.process(&config, &tfault_s);
+        match admin_r.try_recv(){
+            Ok(command) => {debug!("main thread: got command {}",command);
+                match command{
                 1 => {general_alarm.activators.clear();
                     info!("Resetting general alarm")},
                 2 => {silent_alarm.activators.clear();
                     info!("Resetting silent alarm")},
-                3 => {fault_s.send(254).unwrap();
+                3 => {tfault_s.send(254).unwrap();
                     info!("Resetting Failed Points List");}, //tell thread to dump faulted points
                 4 => {general_alarm.activators.push("Admin-Override".to_string());
                     info!("Override: activating general alarm");},
@@ -49,11 +53,12 @@ fn main() {
                     info!("Override: Activating silent alarm");}
                 6 => {general_alarm.activators.clear();
                     silent_alarm.activators.clear();
-                    fault_s.send(254).unwrap();
+                    tfault_s.send(254).unwrap();
                     info!("Resetting all alarms")}
                 _ => {warn!("anomalous data in confServer channel")}
             }}
-            Err(_) => ()
+            Err(e) => (if e != crossbeam_channel::TryRecvError::Empty{
+                error!("Can't read admin channel: {}",e)})
         }
         thread::sleep(Duration::from_secs(2));
     }
@@ -66,12 +71,6 @@ struct Config{
     silent_ports: Vec<u32>,
     button_lookup: HashMap<String, String>,
     point_lookup: HashMap<u8, String>,
-}
-impl Config{
-    fn print(&self){
-        info!("Config file data: points={}, gp={:?}, sp={:?}", self.points, self.general_ports, self.silent_ports);
-        info!("Lookup table content: {:?}", self.button_lookup);
-    }
 }
 
 //Kinds of alarm
@@ -100,19 +99,22 @@ struct Alarm{
     revere_sender: crossbeam_channel::Sender<Vec<String>>,
     revere_reciever: crossbeam_channel::Receiver<Vec<String>>,
     fault_send: crossbeam_channel::Sender<u8>,
+    fault_recieve: crossbeam_channel::Receiver<u8>,
+    revive_timer: std::time::SystemTime,
     activators: Vec<String>,
     active: bool,
     did_spawn: bool,
     did_clear: bool,
 }
 impl Alarm{
-    fn process(&mut self, conf: &Config){ //does the actual work in terms of coordinating alarm conditions
+    //prcess does the actual work in terms of coordinating alarm conditions
+    fn process(&mut self, conf: &Config, fsnd: &crossbeam_channel::Sender<u8>){ 
         match self.button_reciever.try_recv(){ //get data from respective button thread
             Ok(who) => {
                 if !self.activators.contains(&who){self.activators.push(who.clone());}}//check if alarm activator has already been recorded
             Err(e) => {
                 match e {
-                crossbeam_channel::TryRecvError::Empty => (), //if we get no responce it's technically an err but not a worrysome one
+                crossbeam_channel::TryRecvError::Empty => (), //if no responce it's technically an err
                 crossbeam_channel::TryRecvError::Disconnected => {
                     self.spawn_button(); //assume the buton thread crashed, try to respawn it
                 }}}}
@@ -120,20 +122,32 @@ impl Alarm{
         if !self.active{self.did_spawn=false;
             if !self.did_clear{ //tells revere threads to tell points that all is well, then to kill themselves
                 self.consume_revere_msgs();
-                for _ in 0..(conf.points){self.revere_sender.send(vec!("clear".to_string())).unwrap();}
+                for _ in 0..(conf.points+1){self.revere_sender.send(vec!("clear".to_string())).unwrap();}
                 debug!("stopped reveres!");
                 thread::sleep(Duration::from_secs(6));
                 self.consume_revere_msgs();
                 self.did_clear = true;}}
-        else if !self.did_spawn{self.spawn_revere(conf); 
+        else if !self.did_spawn{for i in 0..(conf.points+1){self.spawn_revere(conf, i);}
             self.did_spawn = true;
             self.did_clear = false;}
-            for _ in 0..(conf.points){match self.revere_sender.send(self.activators.clone()){
-                Ok(_)=>(), Err(e)=>{warn!("Revere not working due to {}", e)}}} //sends more messages than necessary, but that's preferable than too few
+            for _ in 0..(conf.points+1){match self.revere_sender.send(self.activators.clone()){
+                Ok(_)=>(), Err(e)=>{error!("Revere not working due to {}", e)}}}
+        self.revive_reveres(conf, fsnd);
+    }
+    fn revive_reveres(&mut self, conf: &Config, fault_send: &crossbeam_channel::Sender<u8>){ //tries to revive reveres every 10 seconds
+        if self.revive_timer == SystemTime::UNIX_EPOCH{self.revive_timer = SystemTime::now()}
+        match SystemTime::now().duration_since(self.revive_timer).unwrap().as_secs().cmp(&10) 
+                {Ordering::Greater => {
+                self.revive_timer = SystemTime::now();
+                for point in self.fault_recieve.clone(){
+                    match fault_send.send(point) {Ok(_)=> {}, 
+                        Err(e)=> {error!("I can't tell fault handler about failed points because {}",e)}}
+                    self.spawn_revere(conf, point);}
+                }, _ => ()}
     }
     fn spawn_button(&self){
         for port in &self.ports{
-        debug!("starting thread listening on port: {}", port);
+        debug!("starting button thread listening on port: {}", port);
         let sender = self.button_sender.clone();
         let mut listen_addr = "EASops:".to_string();
         listen_addr.push_str(&port.to_string());
@@ -162,7 +176,7 @@ impl Alarm{
                 }}
                 Err(_) => {}
                 }}
-                Err(e) => {warn!("Button thread: Connection failed with code {}", e);}
+                Err(e) => {error!("Button thread: Connection failed with code {}", e);}
                 }}
             error!("Button Listen Thread Exiting!");
         });
@@ -235,11 +249,18 @@ fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that
                 drop(stream);
                 thread::sleep(Duration::from_secs(3));}
                 Err(_) => {errsend.send(i).unwrap(); panic!("Point #{}: internal fatal error", i);}
+
             }
-     }if clear {break;}}
-            debug!("Exiting Thread");
-        });
-    }
+            stream.shutdown(Shutdown::Both).unwrap();
+            drop(stream);
+            thread::sleep(Duration::from_secs(3));}
+            Err(e) => {errsend.send(pointnum).unwrap(); 
+                panic!("Point #{}: internal fatal error: {}", pointnum,e);}
+        }
+    }if clear {break;}}
+        debug!("Exiting Thread");
+    });
+
 } 
 
 fn consume_revere_msgs(&self){
@@ -249,24 +270,23 @@ fn consume_revere_msgs(&self){
         Ok(_) => (),
         Err(_) => break,
     }}
-}
-}
+}}
 
-fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
-    info!("starting Config listener on port: {}", port);
-    let sender = sender.clone();
+fn spawn_admin(port: u32, tsender: crossbeam_channel::Sender<u8>){
+    debug!("starting Config server listener on port: {}", port);
+    let sender = tsender.clone();
     let mut listen_addr = "EASops:".to_string();
         listen_addr.push_str(&port.to_string());
     thread::spawn(move || {
-        let tgt: std::net::SocketAddr; //real points will start at 1
+        let tgt: std::net::SocketAddr;
         let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
         match listen_addr.to_socket_addrs(){
             Ok(addr) => addrs_iter = addr,
-            Err(_) => {panic!("Address resolution fault.");}
+            Err(_) => {panic!("Admin thread: can't resolve own address!");}
         }
         match addrs_iter.next(){
             Some(addr) => {tgt = addr;},
-            None => {panic!("Address resolution fault.");} 
+            None => {panic!("Admin thread: can't resolve own address!");} 
         }
         let listener = TcpListener::bind(tgt).unwrap();
         for stream in listener.incoming() {
@@ -287,11 +307,15 @@ fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
                                 "sset"   => command = 5,
                                 "aclear" => command = 6,
                                 _ => {streamm.write(b"no").unwrap();
+                                    warn!("EASrvr is sending anomalous communications");
                                     command = 0}
                             }
-                            if command != 0{sender.send(command).unwrap();
+                            if command != 0{match sender.send(command){
+                                Ok(_) => debug!("Passed {} into main channel",command),
+                                Err(e) => error!("Can't tell main thread about admin command:  {}",e)}
                             streamm.write(b"ok").unwrap();
-                            }}
+                            debug!("told EASrvr ok");}
+                            else{info!("Ignoring EASrvr command")}}
             Err(_) => {warn!("Config Server Listen: fault");}
             }}
             Err(_) => {warn!("Config Server Listen: Fault when reading data!");}
@@ -302,7 +326,7 @@ fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
     });
 }
 
-fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
+fn spawn_easrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
     debug!("faultsend thread started");
     let reader = reader0.clone();
     let llook = conf.point_lookup.clone();
@@ -347,7 +371,7 @@ fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
                     None => {to_sendable.push_str("Unknown")}
                 }}
                 let sendable = to_sendable.into_bytes();
-            match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {warn!("Fault Thread: Write fault! err: {}",e)}}
+            match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {error!("Fault Thread: Write fault! err: {}",e)}}
             let mut data = [0 as u8; 50];
             match stream.read(&mut data){
                 Ok(size) => {
