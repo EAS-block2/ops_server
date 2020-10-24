@@ -182,65 +182,74 @@ impl Alarm{
         });
     }}
     //create threads to notify strobes and signs of an emergency
-fn spawn_revere(&self, conf: &Config, pointnum: u8){ //so many threads are used to ensure that a possible blocking operation only effects max. 1 point
-    debug!("Starting Revere #{}", pointnum);
-    let listener = self.revere_reciever.clone();
-    let errsend = self.fault_send.clone();
-    let mut alarm = self.kind.clone();
-    let llook = conf.button_lookup.clone();
-    thread::spawn(move || {
-        let mut target = "Point".to_string();
-        let tgt: std::net::SocketAddr;
-            target.push_str(&pointnum.to_string());
-            if pointnum == 0{target = "EASrvr".to_string()} //real points will start at 1
-            target.push_str(":5400");
-            let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
-            match target.to_socket_addrs(){
-                Ok(addr) => addrs_iter = addr,
-                Err(_) => {errsend.send(pointnum).unwrap(); panic!("Cannot Resolve Point {}", pointnum);}
-            }
-            match addrs_iter.next(){
-                Some(addr) => {tgt = addr;},
-                None => {errsend.send(pointnum).unwrap(); panic!("Bad Address");} 
-            }
-        let mut msg: Vec<String> = vec!();
-        let mut clear: bool = false;
-        loop{
-            //check for messages
-            match listener.try_recv(){
-                Ok(e) => {
-                if e.contains(&"clear".to_string()) {clear = true;
-                msg= vec!("clear".to_string());}
-                    else {msg = e}}
-                Err(_) => (),
-            }
-            for activator in msg.clone().into_iter(){
-            //communicate with point
-            match TcpStream::connect(tgt){
-                Ok(mut stream)=>{
-            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-            let to_intosendable: String;
-            if clear{to_intosendable = String::from("clear");}
-            else {match llook.get(&activator){
-                    Some(place) => {to_intosendable = place.to_string()}
-                    None => {if &activator == &String::from("Admin-Override"){to_intosendable = activator}
-                        else{to_intosendable = String::from("Unknown")}}
-                }}
-            let sendable = alarm.into_sendable(&to_intosendable);
-            match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {warn!("Revere Write fault! err: {}",e)}}
-            let mut data = [0 as u8; 50];
-            match stream.read(&mut data){
-                Ok(size) => {
-                    match str::from_utf8(&data[0..size]){
-                        Ok(string_out) => {
-                            match string_out{
-                                "ok" => (),
-                                &_ => {errsend.send(pointnum).unwrap(); 
-                                    panic!("Point #{}: internal fatal error", pointnum);}
-                            }}
-                        Err(e) => {warn!("Revere Client Read Error: {}",e);}
+fn spawn_revere(&self, conf: &Config){ //so many threads are used to ensure that a possible blocking operation only effects max. 1 point
+    for i in 0..conf.points {
+        debug!("Starting Revere #{}", i);
+        let listener = self.revere_reciever.clone();
+        let errsend = self.fault_send.clone();
+        let mut alarm = self.kind.clone();
+        let llook = conf.button_lookup.clone();
+        thread::spawn(move || {
+            let mut non_ok = 0;
+            let mut target = "Point".to_string();
+            let tgt: std::net::SocketAddr;
+                target.push_str(&i.to_string());
+                if i == 0{target = "EASrvr".to_string()} //real points will start at 1
+                target.push_str(":5400");
+                let mut addrs_iter: std::vec::IntoIter<std::net::SocketAddr>;
+                match target.to_socket_addrs(){
+                    Ok(addr) => addrs_iter = addr,
+                    Err(e) => {errsend.send(i).unwrap(); panic!("Cannot Resolve Point {} due to {}",i,e);}
+                }
+                match addrs_iter.next(){
+                    Some(addr) => {tgt = addr;},
+                    None => {errsend.send(i).unwrap(); panic!("Bad Address");} 
+                }
+            let mut msg: Vec<String> = vec!();
+            let mut clear: bool = false;
+            loop{
+                //check for messages
+                match listener.try_recv(){
+                    Ok(e) => {
+                    if e.contains(&"clear".to_string()) {clear = true;
+                    msg= vec!("clear".to_string());}
+                        else {msg = e}}
+                    Err(_) => (),
+                }
+                for activator in msg.clone().into_iter(){
+                //communicate with point
+                match TcpStream::connect(tgt){
+                    Ok(mut stream)=>{
+                stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let to_intosendable: String;
+                if clear{to_intosendable = String::from("clear");}
+                else {match llook.get(&activator){
+                        Some(place) => {to_intosendable = place.to_string()}
+                        None => {if &activator == &String::from("Admin-Override"){to_intosendable = activator}
+                            else{to_intosendable = String::from("Unknown")}}
                     }}
-                Err(e) => {warn!("Revere : Fault when reading data: {}", e);}
+                let sendable = alarm.into_sendable(&to_intosendable);
+                match stream.write(sendable.as_slice()) {Ok(_)=>(), Err(e) => {warn!("Revere Write fault! err: {}",e)}}
+                let mut data = [0 as u8; 50];
+                match stream.read(&mut data){
+                    Ok(size) => {
+                       match str::from_utf8(&data[0..size]){
+                           Ok(string_out) => {
+                               match string_out{
+                                   "ok" => (),
+                                   &_ => {error!("point {} sent non-ok responce, that ain't good.",i);
+                                            non_ok += 1;
+                                            if non_ok >= 4 {panic!("Point {} sent too many erroneous responces, panicking",i)}}
+                               }}
+                           Err(e) => {warn!("Revere {} Client Read Error: {}",i,e);}
+                       }}
+                    Err(e) => {warn!("Revere {} Fault when reading data: {}",i,e);}
+                }
+                stream.shutdown(Shutdown::Both).unwrap();
+                drop(stream);
+                thread::sleep(Duration::from_secs(3));}
+                Err(_) => {errsend.send(i).unwrap(); panic!("Point #{}: internal fatal error", i);}
+
             }
             stream.shutdown(Shutdown::Both).unwrap();
             drop(stream);
