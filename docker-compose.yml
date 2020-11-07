@@ -1,0 +1,8 @@
+version: '3.4'
+
+services:
+  opsserver:
+    image: opsserver
+    build: .
+    dns:
+      hostname: 'EASops'
