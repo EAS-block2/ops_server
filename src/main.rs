@@ -130,9 +130,10 @@ impl Alarm{
                 self.spawn_revere(conf, failed);
                 //tell easrvr about it if it failed 5 times
                 let entry = self.faulted.entry(failed).or_insert(1);
-                debug!("Entry: {}",entry);
                 *entry += 1;
-                if self.faulted[&failed] == 5{match self.global_fault_send.send(failed){Ok(_)=>(),Err(_)=>{error!("Cannot tell easrvr about failure")}}}
+                if self.faulted[&failed] == 5{match self.global_fault_send.send(failed){
+                    Ok(_)=>{debug!("told easrvr thread that point {} failed.",&failed)},
+                    Err(_)=>{error!("Cannot tell easrvr about failure")}}}
             }
             Err(_)=>()
         }
@@ -140,12 +141,13 @@ impl Alarm{
         if !self.active{self.did_spawn=false;
             if !self.did_clear{ //tells revere threads to tell points that all is well, then to kill themselves
                 self.consume_revere_msgs();
+                self.faulted.clear();
                 for _ in 0..(conf.points){self.revere_sender.send(vec!("clear".to_string())).unwrap();}
                 debug!("stopped reveres!");
                 thread::sleep(Duration::from_secs(6));
                 self.consume_revere_msgs();
                 self.did_clear = true;}}
-        else { self.faulted.clear();
+        else {
         if !self.did_spawn{for i in 0..conf.points{self.spawn_revere(conf, i);} 
             self.did_spawn = true;
             self.did_clear = false;}}
@@ -321,9 +323,8 @@ fn spawn_conf(port: u32, sender: crossbeam_channel::Sender<u8>){
     });
 }
 
-fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
+fn spawn_EASrvr_fault(reader: crossbeam_channel::Receiver<u8>, conf: &Config){
     debug!("faultsend thread started");
-    let reader = reader0.clone();
     let llook = conf.point_lookup.clone();
     thread::spawn(move || {
         let tgt: std::net::SocketAddr;
@@ -340,7 +341,8 @@ fn spawn_EASrvr_fault(reader0: crossbeam_channel::Receiver<u8>, conf: &Config){
             match addrs_iter.next(){
                 Some(addr) => {tgt = addr;
                                 break;},
-                None => {error!("fault thread: Bad Address");}
+                None => {error!("fault thread: Bad Address");
+                thread::sleep(Duration::from_millis(500));}
             }}
         let mut failed: Vec<u8> = vec!();
         loop{
