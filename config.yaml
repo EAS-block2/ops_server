@@ -1,4 +1,5 @@
-points: 2
+#including easrvr
+points: 3
 general_ports:
   - 5432
   - 6432
@@ -10,5 +11,5 @@ button_lookup:
   "button1": "Nowhere"
 point_lookup:
   0: "Server-Interface"
-  1: "Point\ 1"
+  1: "Point-1"
   2: "Point-2"

@@ -126,10 +126,12 @@ impl Alarm{
                 }}}}
         match self.fault_recv.try_recv(){
             Ok(failed) => {
-                debug!("respawning revere for point {}",failed);
+                debug!("Failed point matrix: {:?}",self.faulted);             
                 self.spawn_revere(conf, failed);
                 //tell easrvr about it if it failed 5 times
-                *self.faulted.entry(failed).or_insert(1) += 1;
+                let entry = self.faulted.entry(failed).or_insert(1);
+                debug!("Entry: {}",entry);
+                *entry += 1;
                 if self.faulted[&failed] == 5{match self.global_fault_send.send(failed){Ok(_)=>(),Err(_)=>{error!("Cannot tell easrvr about failure")}}}
             }
             Err(_)=>()
