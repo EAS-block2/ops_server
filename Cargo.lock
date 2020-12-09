@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "ops_server"
-version = "0.8.1"
+version = "20.12.0"
 dependencies = [
  "crossbeam-channel",
  "dns-lookup",
