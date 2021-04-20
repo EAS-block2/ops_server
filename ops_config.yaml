@@ -1,0 +1,15 @@
+#including easrvr
+points: 3
+general_ports:
+  - 5432
+  - 6432
+silent_ports:
+  - 5433
+  - 6433
+button_lookup:
+  "button0": "Test-Room"
+  "button1": "Nowhere"
+point_lookup:
+  0: "Server-Interface"
+  1: "Point-1"
+  2: "Point-2"
