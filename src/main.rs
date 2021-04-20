@@ -9,13 +9,13 @@ use simplelog;
 fn main() {
     if cfg!(debug_assertions){simplelog::CombinedLogger::init(vec![
         simplelog::TermLogger::new(simplelog::LevelFilter::Debug, simplelog::Config::default(), simplelog::TerminalMode::Mixed),
-        simplelog::WriteLogger::new(simplelog::LevelFilter::Warn, simplelog::Config::default(), File::create("current.log").unwrap()),
+        simplelog::WriteLogger::new(simplelog::LevelFilter::Warn, simplelog::Config::default(), File::create("/var/log/EASOPS/debugcurrent.log").unwrap()),
         ]).unwrap();}
     else{simplelog::CombinedLogger::init(vec![
         simplelog::TermLogger::new(simplelog::LevelFilter::Info, simplelog::Config::default(), simplelog::TerminalMode::Mixed),
-        simplelog::WriteLogger::new(simplelog::LevelFilter::Warn, simplelog::Config::default(), File::create("current.log").unwrap()),
+        simplelog::WriteLogger::new(simplelog::LevelFilter::Warn, simplelog::Config::default(), File::create("/var/log/EASOPS/current.log").unwrap()),
         ]).unwrap();}
-    let conf_f = File::open("config.yaml").expect("Can't File Config"); //tmp filepath
+    let conf_f = File::open("/etc/EAS/ops_config.yaml").expect("Can't File Config"); //tmp filepath
     let config: Config = serde_yaml::from_reader(conf_f).expect("Bad YAML config file!");
     config.print();
     let temphash = HashMap::new();
